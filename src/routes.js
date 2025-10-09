@@ -102,5 +102,28 @@ router.post("/geocode", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// 🔹 4️⃣ /api/nearby – geo pretraga po udaljenosti
+router.get("/nearby", async (req, res) => {
+  try {
+    const lat = parseFloat(req.query.lat);
+    const lon = parseFloat(req.query.lon);
+    const radius = parseInt(req.query.radius || "50000"); // default 50 km
+
+    if (isNaN(lat) || isNaN(lon))
+      return res.status(400).json({ error: "lat/lon required" });
+
+    const { data, error } = await supabase.rpc("get_nearby_reports", {
+      q_lat: lat,
+      q_lon: lon,
+      q_radius: radius
+    });
+
+    if (error) throw error;
+    res.json({ count: data.length, results: data });
+  } catch (err) {
+    console.error("Error /nearby:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 export default router;
