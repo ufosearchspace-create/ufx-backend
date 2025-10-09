@@ -1,0 +1,54 @@
+services:
+  - type: web
+    name: ufx-backend
+    env: node
+    plan: standard
+    runtime: node
+    buildCommand: "npm install"
+    startCommand: "npm start"
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: TZ
+        value: Europe/Zagreb
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: LOCATIONIQ_API_KEY
+        sync: false
+      - key: LOCATIONIQ_BASE_URL
+        value: https://eu1.locationiq.com
+      - key: REPORTS_TABLE
+        value: reports
+      - key: CRON_TOKEN
+        generateValue: true
+      - key: ENABLE_IN_APP_CRON
+        value: "false"
+    healthCheckPath: /health
+    autoDeploy: true
+
+  - type: cron
+    name: ufx-geocode-cron
+    env: docker
+    schedule: "0 4,16 * * *"
+    plan: starter
+    dockerCommand: >
+      bash -lc "
+      : ${TARGET:=${UFX_BACKEND_URL}};
+      if [ -z \"$TARGET\" ]; then
+        echo 'UFX_BACKEND_URL must point to the web service (e.g. https://ufx-backend.onrender.com)';
+        exit 1;
+      fi;
+      curl -sS -X POST \"$TARGET/api/geocode?cron_token=$CRON_TOKEN\" -H 'Content-Type: application/json' -d '{\"table\":\"reports\"}' || exit 2
+      "
+    envVars:
+      - key: UFX_BACKEND_URL
+        sync: false
+      - key: CRON_TOKEN
+        fromService:
+          type: web
+          name: ufx-backend
+          envVarKey: CRON_TOKEN
