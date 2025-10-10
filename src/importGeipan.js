@@ -7,16 +7,23 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const GEIPAN_FEED = "https://www.cnes-geipan.fr/geipan-cases.json";
+// Novi open-data mirror GEIPAN baze (radi bez tokena i blokada)
+const GEIPAN_FEED =
+  "https://www.data.gouv.fr/fr/datasets/r/ef06eabe-f7a7-4f9c-8c60-43a2e7a88d1c";
 
 export async function importGeipan() {
   console.log("🚀 Starting GEIPAN import...");
 
   const response = await fetch(GEIPAN_FEED, {
-    headers: { "User-Agent": "UFX-Backend/1.0 (+https://ufxproject-site.vercel.app)" },
+    headers: {
+      "User-Agent": "UFX-Backend/1.0",
+      Accept: "application/json",
+    },
   });
 
-  if (!response.ok) throw new Error(`GEIPAN API error: ${response.statusText}`);
+  if (!response.ok) {
+    throw new Error(`GEIPAN API error: ${response.statusText}`);
+  }
 
   const data = await response.json();
 
@@ -27,20 +34,26 @@ export async function importGeipan() {
   const records = data.map((c) => ({
     source_name: "GEIPAN",
     source_url: c.url || null,
-    event_date: c.dateObservation || null,
-    city: c.ville || null,
+    event_date: c["Date d'observation"] || null,
+    city: c["Lieu"] || null,
     country: "France",
-    description: c.resume || null,
-    classification: c.classification || null,
-    lat: c.latitude || null,
-    lon: c.longitude || null,
-    year: c.dateObservation
-      ? new Date(c.dateObservation).getFullYear()
+    description: c["Résumé"] || null,
+    classification: c["Classification"] || null,
+    lat: parseFloat(c["Latitude"]) || null,
+    lon: parseFloat(c["Longitude"]) || null,
+    year: c["Date d'observation"]
+      ? new Date(c["Date d'observation"]).getFullYear()
       : null,
   }));
 
-  const { error } = await supabase.from("reports").upsert(records);
-  if (error) console.error("❌ Supabase insert error:", error);
+  // ✅ Sigurni batch import (da Render ne padne)
+  const batchSize = 400;
+  for (let i = 0; i < records.length; i += batchSize) {
+    const chunk = records.slice(i, i + batchSize);
+    const { error } = await supabase.from("reports").upsert(chunk);
+    if (error) console.error("❌ Supabase insert error:", error);
+    console.log(`📦 Imported batch ${i / batchSize + 1}`);
+  }
 
   console.log(`✅ GEIPAN import completed (${records.length} rows)`);
   return records.length;
