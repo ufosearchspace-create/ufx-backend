@@ -7,57 +7,41 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const GEIPAN_API = "https://www.cnes-geipan.fr/api/case?page=";
+const GEIPAN_FEED = "https://www.cnes-geipan.fr/geipan-cases.json";
 
 export async function importGeipan() {
   console.log("🚀 Starting GEIPAN import...");
 
-  let page = 1;
-  let totalImported = 0;
-  let hasMore = true;
+  const response = await fetch(GEIPAN_FEED, {
+    headers: { "User-Agent": "UFX-Backend/1.0 (+https://ufxproject-site.vercel.app)" },
+  });
 
-  while (hasMore) {
-    const response = await fetch(`${GEIPAN_API}${page}&itemsPerPage=100`, {
-      headers: {
-        "User-Agent": "UFX-Backend/1.0 (+https://ufxproject-site.vercel.app)"
-      }
-    });
+  if (!response.ok) throw new Error(`GEIPAN API error: ${response.statusText}`);
 
-    if (!response.ok) {
-      throw new Error(`GEIPAN API error: ${response.statusText}`);
-    }
+  const data = await response.json();
 
-    const data = await response.json();
-    const cases = data["hydra:member"] || [];
-
-    if (cases.length === 0) {
-      hasMore = false;
-      break;
-    }
-
-    const records = cases.map((c) => ({
-      source_name: "GEIPAN",
-      source_url: c.caseFile || null,
-      event_date: c.observationDate || null,
-      city: c.city || null,
-      country: c.country || "France",
-      description: c.summary || null,
-      classification: c.classification || null,
-      lat: c.latitude || null,
-      lon: c.longitude || null,
-      year: c.observationDate
-        ? new Date(c.observationDate).getFullYear()
-        : null,
-    }));
-
-    const { error } = await supabase.from("reports").upsert(records);
-    if (error) console.error("❌ Supabase insert error:", error);
-
-    totalImported += records.length;
-    console.log(`📦 Imported ${records.length} records from page ${page}`);
-    page++;
+  if (!Array.isArray(data) || data.length === 0) {
+    throw new Error("GEIPAN feed returned no data");
   }
 
-  console.log(`✅ GEIPAN import completed (${totalImported} rows)`);
-  return totalImported;
+  const records = data.map((c) => ({
+    source_name: "GEIPAN",
+    source_url: c.url || null,
+    event_date: c.dateObservation || null,
+    city: c.ville || null,
+    country: "France",
+    description: c.resume || null,
+    classification: c.classification || null,
+    lat: c.latitude || null,
+    lon: c.longitude || null,
+    year: c.dateObservation
+      ? new Date(c.dateObservation).getFullYear()
+      : null,
+  }));
+
+  const { error } = await supabase.from("reports").upsert(records);
+  if (error) console.error("❌ Supabase insert error:", error);
+
+  console.log(`✅ GEIPAN import completed (${records.length} rows)`);
+  return records.length;
 }
