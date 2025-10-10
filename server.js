@@ -30,3 +30,15 @@ app.post("/api/import/mufon", async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+import { importGeipan } from "./src/importGeipan.js";
+
+app.post("/api/import/geipan", async (req, res) => {
+  try {
+    const count = await importGeipan();
+    res.json({ success: true, source: "GEIPAN", imported: count });
+  } catch (err) {
+    console.error("Error importing GEIPAN:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
