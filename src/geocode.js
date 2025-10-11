@@ -1,28 +1,62 @@
-import cron from "node-cron";
+// src/geocode.js
 import fetch from "node-fetch";
+import { createClient } from "@supabase/supabase-js";
+import dotenv from "dotenv";
 
-export function setupInAppCron(app) {
-  console.log("✅ In-app geocode cron initialized (runs at 04:00 and 16:00 daily)");
+dotenv.config();
 
-  // Pokreće se svakih 12 sati (04:00 i 16:00)
-  cron.schedule("0 4,16 * * *", async () => {
-    const backendUrl = process.env.RENDER_EXTERNAL_URL || "http://localhost:10000";
-    const token = process.env.CRON_TOKEN || "ufx2025secure!";
-    const target = `${backendUrl}/api/geocode?cron_token=${token}`;
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-    console.log(`🌍 Triggering geocode job: ${target}`);
+/**
+ * Popunjava koordinate (lat/lon) za zapise u tablici `reports`
+ * koji imaju adresu, ali nemaju lat/lon.
+ */
+export async function geocodeMissing() {
+  console.log("🌍 Starting geocode job…");
+
+  const { data: rows, error } = await supabase
+    .from("reports")
+    .select("id, address")
+    .is("lat", null)
+    .limit(50);
+
+  if (error) throw error;
+  if (!rows || rows.length === 0) {
+    console.log("✅ No missing coordinates found.");
+    return { updatedCount: 0, updated: [] };
+  }
+
+  const updated = [];
+
+  for (const r of rows) {
+    if (!r.address) continue;
+    const url = `${process.env.LOCATIONIQ_BASE_URL}/v1/search?key=${process.env.LOCATIONIQ_API_KEY}&q=${encodeURIComponent(
+      r.address
+    )}&format=json&limit=1`;
 
     try {
-      const res = await fetch(target, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ table: process.env.REPORTS_TABLE || "reports" })
-      });
+      const resp = await fetch(url);
+      if (!resp.ok) continue;
+      const json = await resp.json();
+      if (json && json[0]) {
+        const lat = parseFloat(json[0].lat);
+        const lon = parseFloat(json[0].lon);
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      console.log("✅ Geocode cron executed successfully");
+        const { error: upErr } = await supabase
+          .from("reports")
+          .update({ lat, lon })
+          .eq("id", r.id);
+
+        if (!upErr) updated.push({ id: r.id, lat, lon });
+      }
     } catch (err) {
-      console.error("❌ Geocode cron failed:", err.message);
+      console.error("⚠️ Geocoding failed for", r.address, err.message);
     }
-  });
+  }
+
+  console.log(`✅ Geocoded ${updated.length} records.`);
+  return { updatedCount: updated.length, updated };
 }
