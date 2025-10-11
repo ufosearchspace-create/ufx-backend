@@ -5,6 +5,7 @@ import { importCsvFromUrl } from "./importCsv.js";
 
 export async function importGeipanAuto() {
   console.log("🔍 Fetching latest GEIPAN export link…");
+
   const pageResp = await fetch("https://www.cnes-geipan.fr/en/search/cas", {
     headers: {
       "User-Agent": "UFX-Backend/1.0",
@@ -18,8 +19,11 @@ export async function importGeipanAuto() {
 
   const html = await pageResp.text();
   const $ = load(html);
+
+  // pokušaj pronaći link s 'export_cas_pub_'
   let csvHref = $('a[href*="export_cas_pub_"]').attr("href");
 
+  // ako nije pronađen iz prve, traži bilo koji .csv link koji sadrži 'export_cas_pub_'
   if (!csvHref) {
     $('a').each((_, a) => {
       const h = $(a).attr("href") || "";
