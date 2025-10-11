@@ -42,3 +42,16 @@ app.post("/api/import/geipan", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+import { importCsvFromUrl } from "./src/importCsv.js";
+
+app.post("/api/import/csv", async (req, res) => {
+  try {
+    const { url, source_name, mapping, batchSize } = req.body || {};
+    const result = await importCsvFromUrl({ url, source_name, mapping, batchSize });
+    res.json({ success: true, ...result });
+  } catch (e) {
+    console.error("CSV import error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
