@@ -38,7 +38,7 @@ export async function geocodeMissing() {
   console.log("🌍 Starting geocoding for missing coordinates...");
 
   try {
-    // Fetch all reports that are missing coordinates
+    // Fetch reports without lat/lon
     const { data: reports, error: fetchError } = await supabase
       .from("reports")
       .select("*")
@@ -59,7 +59,6 @@ export async function geocodeMissing() {
       const query = encodeURIComponent(
         `${report.city || ""}, ${report.region || ""}, France`
       );
-
       const url = `https://us1.locationiq.com/v1/search.php?key=${LOCATIONIQ_API_KEY}&q=${query}&format=json`;
 
       try {
@@ -84,8 +83,14 @@ export async function geocodeMissing() {
         console.error(`❌ Geocoding failed for ${report.id}:`, geoErr.message);
       }
 
-      // Short delay to avoid hitting API limits
+      // small delay to avoid rate limit
       await new Promise((r) => setTimeout(r, 1000));
     }
 
-    console.log(`✅ Geocoding
+    console.log(`✅ Geocoding complete. Updated ${updatedCount} records.`);
+    return { updated: updatedCount };
+  } catch (err) {
+    console.error("❌ geocodeMissing() failed:", err.message);
+    throw err;
+  }
+}
