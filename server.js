@@ -1,12 +1,16 @@
+// 🧩 Environment Diagnostics — odmah ispiši vrijednosti u Render logu
 console.log("🧩 ENV CHECK START");
 console.log("SUPABASE_URL:", process.env.SUPABASE_URL);
 console.log("SUPABASE_KEY:", process.env.SUPABASE_KEY);
 console.log("SUPABASE_SERVICE_KEY:", process.env.SUPABASE_SERVICE_KEY);
+console.log("SUPABASE_SERVICE_ROLE_KEY:", process.env.SUPABASE_SERVICE_ROLE_KEY);
 console.log("CRON_TOKEN:", process.env.CRON_TOKEN);
 console.log("NODE_ENV:", process.env.NODE_ENV);
 console.log("🧩 ENV CHECK END");
 
-// server.js
+// ---------------------------
+// Import dependencies
+// ---------------------------
 import express from "express";
 import fetch from "node-fetch";
 import dotenv from "dotenv";
@@ -17,15 +21,32 @@ import { importCsvFromUrl } from "./src/importCsv.js";
 import { importGeipanAuto } from "./src/importGeipanAuto.js";
 import { geocodeMissing } from "./src/geocode.js";
 
+// ---------------------------
+// Load .env
+// ---------------------------
 dotenv.config();
+
 const app = express();
 app.use(bodyParser.json());
 
-// Supabase client
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+// ---------------------------
+// Supabase client (with fallback for multiple key names)
+// ---------------------------
+const supabaseKey =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SERVICE_KEY ||
+  process.env.SUPABASE_KEY;
+
+if (!process.env.SUPABASE_URL || !supabaseKey) {
+  console.error("❌ Supabase configuration missing!");
+  console.error("SUPABASE_URL:", process.env.SUPABASE_URL);
+  console.error("SUPABASE_SERVICE_ROLE_KEY:", process.env.SUPABASE_SERVICE_ROLE_KEY);
+  console.error("SUPABASE_SERVICE_KEY:", process.env.SUPABASE_SERVICE_KEY);
+  console.error("SUPABASE_KEY:", process.env.SUPABASE_KEY);
+  process.exit(1);
+}
+
+const supabase = createClient(process.env.SUPABASE_URL, supabaseKey);
 
 // ---------------------------
 // Helper: Cron token security
@@ -80,7 +101,9 @@ app.post("/api/import", async (req, res) => {
 // ---------------------------
 app.post("/api/geocode", async (req, res) => {
   try {
-    if (!checkCronToken(req)) return res.status(401).json({ error: "Invalid cron token" });
+    if (!checkCronToken(req))
+      return res.status(401).json({ error: "Invalid cron token" });
+
     const result = await geocodeMissing();
     res.json({ success: true, ...result });
   } catch (e) {
@@ -95,7 +118,8 @@ app.post("/api/geocode", async (req, res) => {
 // ---------------------------
 app.post("/api/import/geipan-auto", async (req, res) => {
   try {
-    if (!checkCronToken(req)) return res.status(401).json({ error: "Invalid cron token" });
+    if (!checkCronToken(req))
+      return res.status(401).json({ error: "Invalid cron token" });
 
     console.log("🚀 Starting GEIPAN automatic import...");
     const result = await importGeipanAuto();
@@ -107,7 +131,7 @@ app.post("/api/import/geipan-auto", async (req, res) => {
 });
 
 // ---------------------------
-// Server start
+// Start server
 // ---------------------------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
