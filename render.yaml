@@ -7,9 +7,11 @@ services:
     buildCommand: npm install
     startCommand: npm start
 
-cronJobs:
-  - name: geipan-auto-import
-    schedule: "0 1 * * *"
-    command: >
-      curl -s -X POST
-      "https://ufx-backend.onrender.com/api/import/geipan-auto?cron_token=ufx2025secure!"
+  - type: cron
+    name: geipan-auto-import
+    env: node
+    plan: starter
+    schedule: "0 1 * * *" # svaki dan u 1:00 UTC
+    command: |
+      curl -s -X POST "https://ufx-backend.onrender.com/api/import/geipan-auto?cron_token=ufx2025secure!"
+    region: frankfurt
