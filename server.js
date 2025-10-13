@@ -1,3 +1,11 @@
+console.log("🧩 ENV CHECK START");
+console.log("SUPABASE_URL:", process.env.SUPABASE_URL);
+console.log("SUPABASE_KEY:", process.env.SUPABASE_KEY);
+console.log("SUPABASE_SERVICE_KEY:", process.env.SUPABASE_SERVICE_KEY);
+console.log("CRON_TOKEN:", process.env.CRON_TOKEN);
+console.log("NODE_ENV:", process.env.NODE_ENV);
+console.log("🧩 ENV CHECK END");
+
 // server.js
 import express from "express";
 import fetch from "node-fetch";
