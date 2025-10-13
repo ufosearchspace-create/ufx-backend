@@ -6,3 +6,22 @@ services:
     region: frankfurt
     buildCommand: npm install
     startCommand: npm start
+    envVars:
+      - key: SUPABASE_URL
+        value: https://zgoznvyeicbvqqoghmug.supabase.co
+      - key: SUPABASE_SERVICE_KEY
+        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpnb3pudnllaWNidnFxb2dobXVnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1OTE0NDgxMiwiZXhwIjoyMDc0NzIwODEyfQ.MzIMgopeFa9C8NzVxb1gEL1XiECnAOiOtQNAaDMxNKI
+      - key: LOCATIONIQ_TOKEN
+        value: pk.bc9d3dbce3e24fae66105edc16fe0e83
+      - key: DATA_WORLD_TOKEN
+        value: eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJwcm9kLXVzZXItY2xpZW50OnVmeCIsImlzcyI6ImFnZW50OnVmeDo6MzdhNTUzZjYtMmI1Yi00MWZiLWJmZDQtZjY2MTU2N2YxNzZmIiwiaWF0IjoxNzYwMTM3NTA3LCJyb2xlIjpbInVzZXJfYXBpX3JlYWQiLCJ1c2VyX2FwaV93cml0ZSJdLCJnZW5lcmFsLXB1cnBvc2UiOnRydWUsInN2Yy1hY2NvdW50IjpmYWxzZX0.PmQSWWRYpc0OQEJApIUFTi8Uf6LLL2Oc5DFVu6sX-OS_jRbWDzOram1l5XS5vdrzOxnqSMVE7zcw_mJyFyUSfQ
+      - key: CRON_TOKEN
+        value: uFX2025secure!
+      - key: NODE_ENV
+        value: production
+
+cronJobs:
+  - name: geipan-auto-import
+    schedule: "0 1 * * *"
+    command: >
+      curl -s -X POST "https://ufx-backend.onrender.com/api/import/geipan-auto?cron_token=ufx2025secure!"
