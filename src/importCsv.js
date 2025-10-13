@@ -14,6 +14,7 @@ const supabase = createClient(
 
 /**
  * Uvozi CSV datoteku s URL-a u Supabase tablicu `reports`.
+ * Automatski detektira delimiter i koristi UPSERT (bez duplikata).
  * @param {Object} options
  * @param {string} options.url - URL CSV datoteke
  * @param {string} options.source_name - naziv izvora (npr. GEIPAN, NUFORC, MUFON)
@@ -36,10 +37,9 @@ export async function importCsvFromUrl({
   const csvData = await resp.text();
 
   // Odredi delimiter
-  // Ako datoteka sadrži "export_cas_pub_" (GEIPAN), koristi "|"
   const delimiter = url.includes("geipan") ? "|" : ",";
 
-  // Parsiraj CSV u objekte
+  // Parsiraj CSV
   const records = parse(csvData, {
     columns: true,
     skip_empty_lines: true,
@@ -51,15 +51,15 @@ export async function importCsvFromUrl({
   console.log(`📄 Parsed ${records.length} records from ${source_name}`);
 
   let insertedCount = 0;
+  const totalBatches = Math.ceil(records.length / batchSize);
 
   for (let i = 0; i < records.length; i += batchSize) {
     const batch = records.slice(i, i + batchSize);
 
-    // mapiranje u oblik pogodan za našu Supabase tablicu
     const rows = batch.map((r) => {
       const obj = {};
 
-      // GEIPAN CSV polja (pipe-delimited)
+      // GEIPAN CSV mapiranje
       if (mapping === "geipan_fr" || delimiter === "|") {
         obj.source = "GEIPAN";
         obj.case_id = r["NUMERO"] || r["numero"] || null;
@@ -83,18 +83,27 @@ export async function importCsvFromUrl({
 
       obj.created_at = new Date().toISOString();
       obj.source_name = source_name;
+
+      // Hash ključ za detekciju duplikata (ako slučajno case_id fali)
+      obj.unique_key = `${obj.source || "GEN"}_${obj.case_id || obj.place || Math.random().toString(36).substring(2, 8)}`;
+
       return obj;
     });
 
-    const { error } = await supabase.from("reports").insert(rows);
+    // UPSERT umjesto INSERT
+    const { error } = await supabase
+      .from("reports")
+      .upsert(rows, { onConflict: ["case_id", "source"] });
 
     if (error) {
-      console.error("❌ Supabase insert error:", error.message);
+      console.error("❌ Supabase upsert error:", error.message);
       throw error;
     }
 
     insertedCount += rows.length;
-    console.log(`✅ Inserted batch ${i / batchSize + 1}: ${rows.length} records`);
+    console.log(
+      `✅ Batch ${i / batchSize + 1}/${totalBatches}: ${rows.length} records`
+    );
   }
 
   console.log(`🎯 Import finished: ${insertedCount} total rows`);
