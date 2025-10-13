@@ -1,6 +1,6 @@
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
-import csv from "csv-parse/sync";
+import { parse } from "csv-parse/sync"; // ✅ Ispravno — koristi named export "parse"
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -35,14 +35,15 @@ export async function importCsvFromUrl({ url, source_name = "GEIPAN", mapping })
 
   const csvText = await response.text();
 
-  // Parse CSV (handle both ; and , delimiters)
-  const records = csv.parse(csvText, {
+  // ✅ Parse CSV (radi i za ; i za ,)
+  const records = parse(csvText, {
     delimiter: [";", ","],
     skip_empty_lines: true,
   });
 
   console.log(`📄 Parsed ${records.length} records from ${source_name}`);
 
+  // Mapiraj kolone prema našem modelu
   const rows = records.slice(1).map((cols, idx) => ({
     case_id: cols[0] || `case_${idx}`,
     date: cols[2] || null,
@@ -55,6 +56,7 @@ export async function importCsvFromUrl({ url, source_name = "GEIPAN", mapping })
     source: source_name,
   }));
 
+  // ✅ Upsert u Supabase
   const { error } = await supabase.from("reports").upsert(rows);
   if (error) {
     console.error("❌ Supabase insert error:", error);
