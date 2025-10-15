@@ -16,20 +16,31 @@ const GEIPAN_CSV_URL =
   "https://www.cnes-geipan.fr/sites/default/files/save_json_import_files/export_cas_pub_20250821093454.csv";
 
 /**
- * Robust CSV parsing for GEIPAN with relaxed rules.
+ * 🔧 Ultra-robustan parser koji čisti CSV prije parsiranja
+ * Rješava: loše zatvorene navodnike, CR/LF razlike, html tagove, razmake, BOM...
  */
-function parseGeipanCsv(csvData) {
+function cleanAndParseCsv(csvText) {
   try {
-    const records = parse(csvData, {
+    let cleaned = csvText
+      .replace(/\r\n/g, "\n")                 // normalizira linije
+      .replace(/""/g, '"')                    // dupli navodnici → jednostruki
+      .replace(/\n\s*"\s*\n/g, "\n")          // lomi neispravne navodnike
+      .replace(/<\/?[^>]+(>|$)/g, "")         // makni HTML tagove
+      .replace(/\uFEFF/g, "");                // BOM fix
+
+    const records = parse(cleaned, {
       columns: true,
       skip_empty_lines: true,
-      relax_quotes: true,        // 👈 fixes invalid quote issues
-      relax_column_count: true,  // 👈 allows inconsistent row lengths
-      relax: true,               // 👈 general relaxed mode
+      relax_quotes: true,
+      relax_column_count: true,
+      relax: true,
       trim: true,
       bom: true,
       delimiter: ",",
+      quote: '"',
+      escape: '"',
     });
+
     return records;
   } catch (error) {
     console.error("❌ CSV parsing failed:", error.message);
@@ -38,7 +49,7 @@ function parseGeipanCsv(csvData) {
 }
 
 /**
- * Maps and normalizes GEIPAN CSV record structure
+ * GEIPAN → naša baza
  */
 function mapGeipanRecord(row) {
   return {
@@ -57,15 +68,12 @@ function mapGeipanRecord(row) {
 }
 
 /**
- * GEIPAN auto-import endpoint
- * Example: /api/import/geipan-auto?cron_token=uFX2025secure!
+ * Glavni endpoint
  */
 router.post("/geipan-auto", async (req, res) => {
   const cronToken = req.query.cron_token;
-
-  if (cronToken !== process.env.CRON_TOKEN) {
+  if (cronToken !== process.env.CRON_TOKEN)
     return res.status(403).json({ success: false, error: "Invalid token" });
-  }
 
   console.log("🚀 Starting GEIPAN automatic import...");
   console.log("📦 Using fixed GEIPAN CSV:", GEIPAN_CSV_URL);
@@ -75,7 +83,7 @@ router.post("/geipan-auto", async (req, res) => {
     const csvText = await csvResponse.text();
 
     console.log("🔗 Fetching CSV:", GEIPAN_CSV_URL);
-    const parsed = parseGeipanCsv(csvText);
+    const parsed = cleanAndParseCsv(csvText);
     console.log(`📄 Parsed ${parsed.length} records from GEIPAN`);
 
     const cleanData = parsed
