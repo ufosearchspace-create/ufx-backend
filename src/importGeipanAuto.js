@@ -14,9 +14,7 @@ const supabase = createClient(
 const GEIPAN_CSV_URL =
   "https://www.cnes-geipan.fr/sites/default/files/save_json_import_files/export_cas_pub_20250821093454.csv";
 
-/**
- * 🧹 Binary-safe cleaner — briše sve neprintljive i ne-UTF8 znakove
- */
+// 🧹 Binary-safe cleaner
 function cleanCsv(rawText) {
   return rawText
     .replace(/\r\n/g, "\n")
@@ -27,29 +25,28 @@ function cleanCsv(rawText) {
     .split("")
     .map((ch) => {
       const code = ch.charCodeAt(0);
-      // Dozvoli samo “normalne” ASCII znakove + newline
       if (code === 10 || (code >= 32 && code <= 126)) return ch;
       return " ";
     })
     .join("");
 }
 
-/**
- * ⚙️ Super jednostavan fallback parser bez biblioteka
- * Dijeli redove ručno i splita po |
- */
+// 🧩 Dinamični ručni CSV parser (| separator)
 function primitiveCsvParser(csvText) {
   const lines = csvText.split("\n").filter((l) => l.trim().length > 0);
-  const header = lines[0].split("|").map((h) => h.trim());
+  if (lines.length < 2) return [];
+
+  const header = lines[0]
+    .split("|")
+    .map((h) => h.trim().toLowerCase().replace(/\s+/g, " ")); // normalize header
+
   const records = [];
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     const parts = line.split("|");
-    if (parts.length !== header.length) {
-      // preskoči red ako ne valja
-      continue;
-    }
+
+    if (parts.length !== header.length) continue; // skip bad lines
 
     const record = {};
     for (let j = 0; j < header.length; j++) {
@@ -61,28 +58,30 @@ function primitiveCsvParser(csvText) {
   return records;
 }
 
-/**
- * Mapa CSV → reports tablica
- */
+// 🗺️ Mapiranje — fleksibilno po nazivima stupaca
 function mapGeipanRecord(row) {
+  const get = (keys) =>
+    keys.reduce((acc, key) => acc || row[key.toLowerCase()], null);
+
   return {
-    case_id: row["N° dossier"]?.trim(),
-    date_event: row["Date observation"] || null,
-    dep_name: row["Département"] || null,
+    case_id: get(["n° dossier", "n dossier", "ndossier", "num dossier"]),
+    date_event: get(["date observation", "date"]),
+    dep_name: get(["département", "departement"]),
     country: "France",
-    classification: row["Type"] || null,
-    title: row["Titre"] || row["Résumé du cas"] || "Cas GEIPAN",
-    details: row["Résumé du cas"] || null,
-    lat: row["Latitude"] || null,
-    lon: row["Longitude"] || null,
+    classification: get(["type"]),
+    title:
+      get(["titre", "titre du cas", "titre observation"]) ||
+      get(["résumé du cas", "resume du cas"]) ||
+      "Cas GEIPAN",
+    details: get(["résumé du cas", "resume du cas", "description"]),
+    lat: get(["latitude"]),
+    lon: get(["longitude"]),
     source: "GEIPAN",
     updated_at: new Date().toISOString(),
   };
 }
 
-/**
- * 🚀 Glavni endpoint
- */
+// 🚀 Glavni endpoint
 router.post("/geipan-auto", async (req, res) => {
   const cronToken = req.query.cron_token;
   if (cronToken !== process.env.CRON_TOKEN)
@@ -95,16 +94,15 @@ router.post("/geipan-auto", async (req, res) => {
     const response = await fetch(GEIPAN_CSV_URL);
     const rawText = await response.text();
 
-    // Pretvori i očisti CSV
     const cleaned = cleanCsv(rawText);
     const parsed = primitiveCsvParser(cleaned);
-    console.log(`📄 Parsed ${parsed.length} records manually`);
+    console.log(`📄 Parsed ${parsed.length} rows from CSV`);
 
     const cleanData = parsed
       .map(mapGeipanRecord)
       .filter((r) => r.case_id && r.title);
 
-    console.log(`🧹 Cleaned ${cleanData.length} valid records`);
+    console.log(`🧹 Valid records ready: ${cleanData.length}`);
 
     const { error: dbError } = await supabase
       .from("reports")
@@ -112,11 +110,9 @@ router.post("/geipan-auto", async (req, res) => {
 
     if (dbError) {
       console.error("❌ Supabase insert error:", dbError);
-      return res.status(200).json({
-        success: false,
-        source: "GEIPAN",
-        error: dbError.message || dbError,
-      });
+      return res
+        .status(200)
+        .json({ success: false, source: "GEIPAN", error: dbError.message });
     }
 
     console.log(`✅ Imported ${cleanData.length} GEIPAN records`);
