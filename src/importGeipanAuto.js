@@ -1,6 +1,5 @@
 import express from "express";
 import fetch from "node-fetch";
-import { parse } from "csv-parse/sync";
 import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
 
@@ -16,10 +15,10 @@ const GEIPAN_CSV_URL =
   "https://www.cnes-geipan.fr/sites/default/files/save_json_import_files/export_cas_pub_20250821093454.csv";
 
 /**
- * 🔧 Ultra-safe cleaner: pretvara sve u ASCII, uklanja binarne bajtove, “pametne” navodnike i sve nečitljive znakove
+ * 🧹 Binary-safe cleaner — briše sve neprintljive i ne-UTF8 znakove
  */
-function binarySafeClean(csvText) {
-  return csvText
+function cleanCsv(rawText) {
+  return rawText
     .replace(/\r\n/g, "\n")
     .replace(/\uFEFF/g, "")
     .replace(/[“”„‟«»‹›]/g, '"')
@@ -28,68 +27,42 @@ function binarySafeClean(csvText) {
     .split("")
     .map((ch) => {
       const code = ch.charCodeAt(0);
-      if (
-        code === 9 || // tab
-        code === 10 || // newline
-        code === 13 || // carriage return
-        (code >= 32 && code <= 126) || // ASCII
-        (code >= 160 && code <= 255) // Latin-1 Extended
-      ) {
-        return ch;
-      } else {
-        return " "; // zamijeni neprintljive znakove prazninom
-      }
+      // Dozvoli samo “normalne” ASCII znakove + newline
+      if (code === 10 || (code >= 32 && code <= 126)) return ch;
+      return " ";
     })
-    .join("")
-    .replace(/""/g, '"')
-    .trim();
+    .join("");
 }
 
 /**
- * 🔍 Robustno parsiranje s automatskim fallbackom
+ * ⚙️ Super jednostavan fallback parser bez biblioteka
+ * Dijeli redove ručno i splita po |
  */
-function safeParseCsv(csvText) {
-  const cleaned = binarySafeClean(csvText);
+function primitiveCsvParser(csvText) {
+  const lines = csvText.split("\n").filter((l) => l.trim().length > 0);
+  const header = lines[0].split("|").map((h) => h.trim());
+  const records = [];
 
-  try {
-    return parse(cleaned, {
-      columns: true,
-      skip_empty_lines: true,
-      relax_quotes: true,
-      relax_column_count: true,
-      relax: true,
-      trim: true,
-      bom: true,
-    });
-  } catch (err) {
-    console.warn("⚠️ Primary CSV parse failed, trying per-line fallback...");
-
-    const lines = cleaned.split("\n");
-    const validLines = [];
-    for (let i = 0; i < lines.length; i++) {
-      try {
-        parse(lines[i], { relax_quotes: true });
-        validLines.push(lines[i]);
-      } catch {
-        console.warn(`⚠️ Skipping corrupted CSV line ${i + 1}`);
-      }
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    const parts = line.split("|");
+    if (parts.length !== header.length) {
+      // preskoči red ako ne valja
+      continue;
     }
 
-    const finalCsv = validLines.join("\n");
-    return parse(finalCsv, {
-      columns: true,
-      skip_empty_lines: true,
-      relax_quotes: true,
-      relax_column_count: true,
-      relax: true,
-      trim: true,
-      bom: true,
-    });
+    const record = {};
+    for (let j = 0; j < header.length; j++) {
+      record[header[j]] = parts[j]?.trim() ?? null;
+    }
+    records.push(record);
   }
+
+  return records;
 }
 
 /**
- * GEIPAN → struktura baze
+ * Mapa CSV → reports tablica
  */
 function mapGeipanRecord(row) {
   return {
@@ -108,7 +81,7 @@ function mapGeipanRecord(row) {
 }
 
 /**
- * Glavni endpoint
+ * 🚀 Glavni endpoint
  */
 router.post("/geipan-auto", async (req, res) => {
   const cronToken = req.query.cron_token;
@@ -120,10 +93,12 @@ router.post("/geipan-auto", async (req, res) => {
 
   try {
     const response = await fetch(GEIPAN_CSV_URL);
-    const rawCsv = await response.text();
+    const rawText = await response.text();
 
-    const parsed = safeParseCsv(rawCsv);
-    console.log(`📄 Parsed ${parsed.length} records from GEIPAN`);
+    // Pretvori i očisti CSV
+    const cleaned = cleanCsv(rawText);
+    const parsed = primitiveCsvParser(cleaned);
+    console.log(`📄 Parsed ${parsed.length} records manually`);
 
     const cleanData = parsed
       .map(mapGeipanRecord)
@@ -133,7 +108,7 @@ router.post("/geipan-auto", async (req, res) => {
 
     const { error: dbError } = await supabase
       .from("reports")
-      .upsert(cleanData, { onConflict: "case_id", ignoreDuplicates: false });
+      .upsert(cleanData, { onConflict: "case_id" });
 
     if (dbError) {
       console.error("❌ Supabase insert error:", dbError);
@@ -144,7 +119,7 @@ router.post("/geipan-auto", async (req, res) => {
       });
     }
 
-    console.log(`✅ Successfully imported ${cleanData.length} GEIPAN reports`);
+    console.log(`✅ Imported ${cleanData.length} GEIPAN records`);
     res.json({ success: true, count: cleanData.length });
   } catch (error) {
     console.error("❌ GEIPAN auto import error:", error);
