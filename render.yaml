@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: ufx-backend-1
+    name: ufx-backend
     env: node
     plan: standard
     region: frankfurt
