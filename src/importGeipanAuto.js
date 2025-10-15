@@ -22,20 +22,33 @@ export async function importGeipanAuto() {
     throw new Error(`CSV file not found at ${csvPath}`);
   }
 
-  // 🔄 Učitaj CSV kao buffer i konvertiraj u UTF-8 (često je ISO-8859-1)
+  // ✅ Create log dir for bad lines
+  const logDir = path.join(process.cwd(), "logs");
+  if (!fs.existsSync(logDir)) fs.mkdirSync(logDir);
+  const logFile = path.join(logDir, "bad_lines.txt");
+  fs.writeFileSync(logFile, "BAD CSV LINES LOG\n\n");
+
+  // ✅ Read & decode CSV safely
   const buffer = fs.readFileSync(csvPath);
   let csvData = iconv.decode(buffer, "utf-8");
 
-  // 🧠 "Smart" parser – linija po linija
-  const lines = csvData.split(/\r?\n/);
+  // 🔧 Step 1: Clean broken characters and quotes
+  csvData = csvData
+    .replace(/\u0000/g, "") // null chars
+    .replace(/\r/g, "") // carriage returns
+    .replace(/""+/g, '"') // multiple quotes
+    .replace(/“|”/g, '"') // fancy quotes
+    .replace(/;+$/gm, ""); // trailing delimiters
+
+  const lines = csvData.split("\n");
   const headerLine = lines.shift();
   const headers = headerLine.split(";").map((h) => h.trim());
   const validRecords = [];
   let skipped = 0;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim()) continue;
+    const line = lines[i].trim();
+    if (!line) continue;
 
     try {
       const parsed = parse(line, {
@@ -47,7 +60,7 @@ export async function importGeipanAuto() {
         trim: true,
       })[0];
 
-      if (!parsed["Numéro cas"] || !parsed["Date d'observation"]) {
+      if (!parsed || !parsed["Numéro cas"]) {
         skipped++;
         continue;
       }
@@ -65,28 +78,26 @@ export async function importGeipanAuto() {
         updated_at: new Date().toISOString(),
       });
     } catch (err) {
-      console.warn(`⚠️ Skipping broken line ${i + 2}: ${err.message}`);
+      fs.appendFileSync(logFile, `Line ${i + 2}: ${err.message}\n`);
       skipped++;
     }
   }
 
   console.log(`📄 Parsed ${validRecords.length} valid records`);
-  console.log(`🧹 Skipped ${skipped} broken or empty lines`);
+  console.log(`🧹 Skipped ${skipped} malformed or broken lines (logged in logs/bad_lines.txt)`);
 
-  // 🧹 Ukloni duplikate
-  const uniqueRecords = [];
+  // ✅ Remove duplicates
   const seen = new Set();
-  for (const rec of validRecords) {
-    if (!seen.has(rec.case_id)) {
-      seen.add(rec.case_id);
-      uniqueRecords.push(rec);
-    }
-  }
+  const uniqueRecords = validRecords.filter((r) => {
+    if (!r.case_id || seen.has(r.case_id)) return false;
+    seen.add(r.case_id);
+    return true;
+  });
 
-  console.log(`🧹 Removed ${validRecords.length - uniqueRecords.length} duplicates`);
+  console.log(`🧹 Cleaned ${validRecords.length - uniqueRecords.length} duplicates`);
   console.log(`✅ Ready to insert ${uniqueRecords.length} unique records`);
 
-  // 🧾 Upsert u Supabase
+  // ✅ Insert into Supabase
   const { error } = await supabase
     .from("reports")
     .upsert(uniqueRecords, { onConflict: "case_id" });
