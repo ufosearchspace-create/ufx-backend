@@ -16,7 +16,7 @@ import bodyParser from "body-parser";
 import { createClient } from "@supabase/supabase-js";
 
 import { importCsvFromUrl } from "./src/importCsv.js";
-import importGeipanAutoRouter from "./src/importGeipanAuto.js";  // ✅ FIXED LINE
+import { importGeipanAuto } from "./src/importGeipanAuto.js";  // ✅ FIXED LINE
 import { geocodeMissing } from "./src/geocode.js";
 
 dotenv.config();
