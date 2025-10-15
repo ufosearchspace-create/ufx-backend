@@ -1,77 +1,101 @@
-import fetch from "node-fetch";
 import { parse } from "csv-parse/sync";
+import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
-import dotenv from "dotenv";
 
-dotenv.config();
-
-// ---------------------------
-// Supabase client with fallback
-// ---------------------------
-const supabaseKey =
+// ⚙️ Postavke iz environment varijabli
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_SERVICE_KEY ||
   process.env.SUPABASE_KEY;
 
-if (!process.env.SUPABASE_URL || !supabaseKey) {
-  console.error("❌ Missing Supabase credentials in importGeipanAuto.js");
-  console.error("SUPABASE_URL:", process.env.SUPABASE_URL);
-  console.error("SUPABASE_SERVICE_ROLE_KEY:", process.env.SUPABASE_SERVICE_ROLE_KEY);
-  console.error("SUPABASE_SERVICE_KEY:", process.env.SUPABASE_SERVICE_KEY);
-  console.error("SUPABASE_KEY:", process.env.SUPABASE_KEY);
-  throw new Error("Supabase credentials missing.");
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  throw new Error("Missing Supabase credentials in environment.");
 }
 
-const supabase = createClient(process.env.SUPABASE_URL, supabaseKey);
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// ---------------------------
-// GEIPAN automatic CSV import
-// ---------------------------
+// 🧠 Dohvati URL zadnjeg CSV-a s GEIPAN stranice
 export async function importGeipanAuto() {
+  console.log("🚀 Starting GEIPAN automatic import...");
+
   try {
-    console.log("🚀 Fetching latest GEIPAN CSV...");
+    // 1️⃣ Stranica GEIPAN search (HTML)
+    const indexUrl = "https://www.cnes-geipan.fr/en/search/cas";
+    const indexHtml = await fetch(indexUrl).then((r) => r.text());
 
-    // GEIPAN CSV URL — uvijek aktualna verzija
-    const csvUrl =
-      "https://www.cnes-geipan.fr/fileadmin/data.csv";
+    // 2️⃣ Nađi URL CSV fajla (regex)
+    const csvMatch = indexHtml.match(/https:\/\/www\.cnes-geipan\.fr\/sites\/default\/files\/save_json_import_files\/export_cas_pub_\d+\.csv/);
+    if (!csvMatch) throw new Error("No CSV link found on GEIPAN page.");
 
-    const response = await fetch(csvUrl);
-    if (!response.ok) throw new Error(`Failed to fetch GEIPAN CSV: ${response.statusText}`);
+    const csvUrl = csvMatch[0];
+    console.log("📦 Latest GEIPAN CSV:", csvUrl);
 
-    const csvText = await response.text();
+    // 3️⃣ Preuzmi CSV sadržaj
+    const csvText = await fetch(csvUrl).then((r) => {
+      if (!r.ok) throw new Error(`Failed to fetch CSV: ${r.statusText}`);
+      return r.text();
+    });
+
+    console.log("🔗 Fetching CSV:", csvUrl);
+
+    // 4️⃣ Parsiraj CSV
     const records = parse(csvText, {
-      delimiter: [";", ","],
+      delimiter: "|",
+      relax_quotes: true,
+      relax_column_count: true,
       skip_empty_lines: true,
     });
 
-    console.log(`📄 Parsed ${records.length} GEIPAN rows`);
+    console.log(`📄 Parsed ${records.length} records from GEIPAN`);
 
-    // Header skip
-    const dataRows = records.slice(1).map((cols, idx) => ({
-      case_id: cols[0] || `geipan_case_${idx}`,
-      date: cols[2] || null,
-      department: cols[3] || null,
-      region: cols[5] || null,
-      city: cols[6] || null,
-      summary: cols[8] || null,
-      description: cols[9] || null,
-      classification: cols[cols.length - 3] || null,
-      source: "GEIPAN",
-    }));
+    // 5️⃣ Mapiraj zapise u format za Supabase
+    const data = records.map((r) => {
+      const [
+        case_id,
+        title,
+        date,
+        dep_code,
+        dep_name,
+        unknown1,
+        region,
+        summary,
+        details,
+        classification,
+        updated_at,
+        source,
+      ] = r;
 
-    // ---------------------------
-    // Insert or upsert into Supabase
-    // ---------------------------
-    const { error } = await supabase.from("reports").upsert(dataRows);
+      return {
+        case_id,
+        title,
+        date,
+        dep_code,
+        dep_name,
+        region,
+        summary,
+        details,
+        classification,
+        updated_at,
+        source: source || "GEIPAN",
+        address: `${dep_name || ""}, ${region || ""}`,
+      };
+    });
+
+    // 6️⃣ Upsert (insert or update) u Supabase
+    const { error } = await supabase.from("reports").upsert(data, {
+      onConflict: "case_id",
+    });
+
     if (error) {
-      console.error("❌ Supabase upsert error:", error);
+      console.error("❌ Supabase insert error:", error);
       throw error;
     }
 
-    console.log(`✅ Successfully imported ${dataRows.length} GEIPAN reports`);
-    return { insertedCount: dataRows.length };
+    console.log(`✅ GEIPAN import completed (${data.length} records)`);
+    return { imported: data.length };
   } catch (err) {
-    console.error("❌ GEIPAN import failed:", err);
+    console.error("❌ GEIPAN auto import error:", err);
     throw err;
   }
 }
