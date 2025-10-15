@@ -22,51 +22,58 @@ export async function importGeipanAuto() {
     throw new Error(`CSV file not found at ${csvPath}`);
   }
 
-  // ✅ Učitaj CSV kao buffer i konvertiraj u UTF-8 (podržava ISO-8859-1)
+  // 🔄 Učitaj CSV kao buffer i konvertiraj u UTF-8 (često je ISO-8859-1)
   const buffer = fs.readFileSync(csvPath);
-  const csvData = iconv.decode(buffer, "utf-8").replace(/\r\n/g, "\n");
+  let csvData = iconv.decode(buffer, "utf-8");
 
-  let records = [];
-  try {
-    records = parse(csvData, {
-      columns: true,
-      skip_empty_lines: true,
-      relax_column_count: true,
-      relax_quotes: true,
-      delimiter: ";",
-      trim: true,
-      on_record: (record, { lines }) => {
-        if (!record["Numéro cas"] || !record["Date d'observation"]) {
-          console.warn(`⚠️ Skipping bad CSV line ${lines}`);
-          return null;
-        }
+  // 🧠 "Smart" parser – linija po linija
+  const lines = csvData.split(/\r?\n/);
+  const headerLine = lines.shift();
+  const headers = headerLine.split(";").map((h) => h.trim());
+  const validRecords = [];
+  let skipped = 0;
 
-        return {
-          case_id: record["Numéro cas"]?.trim() || null,
-          date_obs: record["Date d'observation"]?.trim() || null,
-          dep_code: record["Département"]?.trim() || null,
-          dep_name: record["Département (nom)"]?.trim() || null,
-          class: record["Classification GEIPAN"]?.trim() || null,
-          shape: record["Forme objet"]?.trim() || null,
-          details: record["Résumé"]?.trim() || null,
-          title: record["Titre"]?.trim() || null,
-          source: "GEIPAN",
-          updated_at: new Date().toISOString(),
-        };
-      },
-    });
-  } catch (err) {
-    console.error("❌ CSV parsing failed:", err.message);
-    throw new Error(`CSV parsing failed: ${err.message}`);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+
+    try {
+      const parsed = parse(line, {
+        columns: headers,
+        delimiter: ";",
+        relax_quotes: true,
+        relax_column_count: true,
+        skip_empty_lines: true,
+        trim: true,
+      })[0];
+
+      if (!parsed["Numéro cas"] || !parsed["Date d'observation"]) {
+        skipped++;
+        continue;
+      }
+
+      validRecords.push({
+        case_id: parsed["Numéro cas"]?.trim() || null,
+        date_obs: parsed["Date d'observation"]?.trim() || null,
+        dep_code: parsed["Département"]?.trim() || null,
+        dep_name: parsed["Département (nom)"]?.trim() || null,
+        class: parsed["Classification GEIPAN"]?.trim() || null,
+        shape: parsed["Forme objet"]?.trim() || null,
+        details: parsed["Résumé"]?.trim() || null,
+        title: parsed["Titre"]?.trim() || null,
+        source: "GEIPAN",
+        updated_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn(`⚠️ Skipping broken line ${i + 2}: ${err.message}`);
+      skipped++;
+    }
   }
 
-  console.log(`📄 Parsed ${records.length} rows from CSV`);
+  console.log(`📄 Parsed ${validRecords.length} valid records`);
+  console.log(`🧹 Skipped ${skipped} broken or empty lines`);
 
-  const validRecords = records.filter((r) => r && r.case_id && r.date_obs);
-  console.log(
-    `🧹 Skipped ${records.length - validRecords.length} malformed/blank rows`
-  );
-
+  // 🧹 Ukloni duplikate
   const uniqueRecords = [];
   const seen = new Set();
   for (const rec of validRecords) {
@@ -76,11 +83,10 @@ export async function importGeipanAuto() {
     }
   }
 
-  console.log(
-    `🧹 Cleaned ${validRecords.length - uniqueRecords.length} duplicate rows`
-  );
+  console.log(`🧹 Removed ${validRecords.length - uniqueRecords.length} duplicates`);
   console.log(`✅ Ready to insert ${uniqueRecords.length} unique records`);
 
+  // 🧾 Upsert u Supabase
   const { error } = await supabase
     .from("reports")
     .upsert(uniqueRecords, { onConflict: "case_id" });
