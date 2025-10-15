@@ -27,22 +27,26 @@ export async function importGeipanAuto() {
   const logFile = path.join(logDir, "bad_lines.txt");
   fs.writeFileSync(logFile, "BAD CSV LINES LOG\n\n");
 
-  // ✅ Učitaj i očisti CSV
+  // ✅ Read and decode properly (GEIPAN is ISO-8859-1 encoded!)
   const buffer = fs.readFileSync(csvPath);
-  let csvData = iconv.decode(buffer, "utf-8")
-    .replace(/\uFEFF/g, "") // ukloni BOM
+  let csvData = iconv.decode(buffer, "ISO-8859-1")
+    .replace(/\uFEFF/g, "") // remove BOM
     .replace(/\r\n/g, "\n")
     .replace(/\u0000/g, "")
     .replace(/“|”/g, '"')
-    .replace(/\s+;/g, ";") // višak razmaka prije delimiter-a
     .trim();
+
+  // ✅ Detect delimiter automatically
+  const sample = csvData.split("\n")[0];
+  const delimiter = sample.includes(";") ? ";" : ",";
+  console.log(`🔍 Detected delimiter: '${delimiter}'`);
 
   let records = [];
   try {
     records = parse(csvData, {
       columns: true,
       skip_empty_lines: true,
-      delimiter: ";",
+      delimiter,
       relax_column_count: true,
       relax_quotes: true,
       trim: true,
@@ -54,7 +58,7 @@ export async function importGeipanAuto() {
 
   console.log(`📄 Parsed ${records.length} raw records`);
 
-  // ✅ Pretvori i validiraj
+  // ✅ Validate and clean
   const validRecords = [];
   let skipped = 0;
 
@@ -87,7 +91,7 @@ export async function importGeipanAuto() {
   console.log(`🧹 Skipped ${skipped} malformed rows (logged in logs/bad_lines.txt)`);
   console.log(`✅ Valid records ready: ${validRecords.length}`);
 
-  // 🧹 Duplikati
+  // 🧹 Deduplicate
   const seen = new Set();
   const uniqueRecords = validRecords.filter((r) => {
     if (seen.has(r.case_id)) return false;
@@ -98,7 +102,7 @@ export async function importGeipanAuto() {
   console.log(`🧹 Cleaned ${validRecords.length - uniqueRecords.length} duplicates`);
   console.log(`✅ Ready to insert ${uniqueRecords.length} unique records`);
 
-  // 🧾 Insert u Supabase
+  // 🧾 Upsert to Supabase
   const { error } = await supabase
     .from("reports")
     .upsert(uniqueRecords, { onConflict: "case_id" });
