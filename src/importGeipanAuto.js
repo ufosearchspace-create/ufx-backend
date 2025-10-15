@@ -22,58 +22,59 @@ export async function importGeipanAuto() {
     throw new Error(`CSV file not found at ${csvPath}`);
   }
 
-  // ✅ Create log dir for bad lines
   const logDir = path.join(process.cwd(), "logs");
   if (!fs.existsSync(logDir)) fs.mkdirSync(logDir);
   const logFile = path.join(logDir, "bad_lines.txt");
   fs.writeFileSync(logFile, "BAD CSV LINES LOG\n\n");
 
-  // ✅ Read & decode CSV safely
+  // ✅ Učitaj i očisti CSV
   const buffer = fs.readFileSync(csvPath);
-  let csvData = iconv.decode(buffer, "utf-8");
+  let csvData = iconv.decode(buffer, "utf-8")
+    .replace(/\uFEFF/g, "") // ukloni BOM
+    .replace(/\r\n/g, "\n")
+    .replace(/\u0000/g, "")
+    .replace(/“|”/g, '"')
+    .replace(/\s+;/g, ";") // višak razmaka prije delimiter-a
+    .trim();
 
-  // 🔧 Step 1: Clean broken characters and quotes
-  csvData = csvData
-    .replace(/\u0000/g, "") // null chars
-    .replace(/\r/g, "") // carriage returns
-    .replace(/""+/g, '"') // multiple quotes
-    .replace(/“|”/g, '"') // fancy quotes
-    .replace(/;+$/gm, ""); // trailing delimiters
+  let records = [];
+  try {
+    records = parse(csvData, {
+      columns: true,
+      skip_empty_lines: true,
+      delimiter: ";",
+      relax_column_count: true,
+      relax_quotes: true,
+      trim: true,
+    });
+  } catch (err) {
+    console.error("❌ CSV parsing failed globally:", err.message);
+    throw new Error(`CSV parsing failed: ${err.message}`);
+  }
 
-  const lines = csvData.split("\n");
-  const headerLine = lines.shift();
-  const headers = headerLine.split(";").map((h) => h.trim());
+  console.log(`📄 Parsed ${records.length} raw records`);
+
+  // ✅ Pretvori i validiraj
   const validRecords = [];
   let skipped = 0;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-
+  for (let i = 0; i < records.length; i++) {
+    const r = records[i];
     try {
-      const parsed = parse(line, {
-        columns: headers,
-        delimiter: ";",
-        relax_quotes: true,
-        relax_column_count: true,
-        skip_empty_lines: true,
-        trim: true,
-      })[0];
-
-      if (!parsed || !parsed["Numéro cas"]) {
+      if (!r["Numéro cas"] || !r["Date d'observation"]) {
         skipped++;
         continue;
       }
 
       validRecords.push({
-        case_id: parsed["Numéro cas"]?.trim() || null,
-        date_obs: parsed["Date d'observation"]?.trim() || null,
-        dep_code: parsed["Département"]?.trim() || null,
-        dep_name: parsed["Département (nom)"]?.trim() || null,
-        class: parsed["Classification GEIPAN"]?.trim() || null,
-        shape: parsed["Forme objet"]?.trim() || null,
-        details: parsed["Résumé"]?.trim() || null,
-        title: parsed["Titre"]?.trim() || null,
+        case_id: r["Numéro cas"].trim(),
+        date_obs: r["Date d'observation"]?.trim() || null,
+        dep_code: r["Département"]?.trim() || null,
+        dep_name: r["Département (nom)"]?.trim() || null,
+        class: r["Classification GEIPAN"]?.trim() || null,
+        shape: r["Forme objet"]?.trim() || null,
+        details: r["Résumé"]?.trim() || null,
+        title: r["Titre"]?.trim() || null,
         source: "GEIPAN",
         updated_at: new Date().toISOString(),
       });
@@ -83,13 +84,13 @@ export async function importGeipanAuto() {
     }
   }
 
-  console.log(`📄 Parsed ${validRecords.length} valid records`);
-  console.log(`🧹 Skipped ${skipped} malformed or broken lines (logged in logs/bad_lines.txt)`);
+  console.log(`🧹 Skipped ${skipped} malformed rows (logged in logs/bad_lines.txt)`);
+  console.log(`✅ Valid records ready: ${validRecords.length}`);
 
-  // ✅ Remove duplicates
+  // 🧹 Duplikati
   const seen = new Set();
   const uniqueRecords = validRecords.filter((r) => {
-    if (!r.case_id || seen.has(r.case_id)) return false;
+    if (seen.has(r.case_id)) return false;
     seen.add(r.case_id);
     return true;
   });
@@ -97,7 +98,7 @@ export async function importGeipanAuto() {
   console.log(`🧹 Cleaned ${validRecords.length - uniqueRecords.length} duplicates`);
   console.log(`✅ Ready to insert ${uniqueRecords.length} unique records`);
 
-  // ✅ Insert into Supabase
+  // 🧾 Insert u Supabase
   const { error } = await supabase
     .from("reports")
     .upsert(uniqueRecords, { onConflict: "case_id" });
