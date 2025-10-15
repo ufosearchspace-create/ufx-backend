@@ -1,101 +1,44 @@
-import { parse } from "csv-parse/sync";
+// src/importGeipanAuto.js
 import fetch from "node-fetch";
-import { createClient } from "@supabase/supabase-js";
+import { importCsvFromUrl } from "./importCsv.js";
 
-// ⚙️ Postavke iz environment varijabli
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SERVICE_KEY ||
-  process.env.SUPABASE_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  throw new Error("Missing Supabase credentials in environment.");
-}
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-// 🧠 Dohvati URL zadnjeg CSV-a s GEIPAN stranice
 export async function importGeipanAuto() {
-  console.log("🚀 Starting GEIPAN automatic import...");
-
   try {
-    // 1️⃣ Stranica GEIPAN search (HTML)
-    const indexUrl = "https://www.cnes-geipan.fr/en/search/cas";
-    const indexHtml = await fetch(indexUrl).then((r) => r.text());
+    console.log("🚀 Starting GEIPAN automatic import...");
 
-    // 2️⃣ Nađi URL CSV fajla (regex)
-    const csvMatch = indexHtml.match(/https:\/\/www\.cnes-geipan\.fr\/sites\/default\/files\/save_json_import_files\/export_cas_pub_\d+\.csv/);
-    if (!csvMatch) throw new Error("No CSV link found on GEIPAN page.");
+    // ✅ Fiksni CSV URL (ručno se mijenja kad GEIPAN objavi novu verziju)
+    const csvUrl =
+      "https://www.cnes-geipan.fr/sites/default/files/save_json_import_files/export_cas_pub_20250821093454.csv";
 
-    const csvUrl = csvMatch[0];
-    console.log("📦 Latest GEIPAN CSV:", csvUrl);
+    console.log("📦 Using fixed GEIPAN CSV:", csvUrl);
 
-    // 3️⃣ Preuzmi CSV sadržaj
-    const csvText = await fetch(csvUrl).then((r) => {
-      if (!r.ok) throw new Error(`Failed to fetch CSV: ${r.statusText}`);
-      return r.text();
-    });
-
-    console.log("🔗 Fetching CSV:", csvUrl);
-
-    // 4️⃣ Parsiraj CSV
-    const records = parse(csvText, {
-      delimiter: "|",
-      relax_quotes: true,
-      relax_column_count: true,
-      skip_empty_lines: true,
-    });
-
-    console.log(`📄 Parsed ${records.length} records from GEIPAN`);
-
-    // 5️⃣ Mapiraj zapise u format za Supabase
-    const data = records.map((r) => {
-      const [
-        case_id,
-        title,
-        date,
-        dep_code,
-        dep_name,
-        unknown1,
-        region,
-        summary,
-        details,
-        classification,
-        updated_at,
-        source,
-      ] = r;
-
-      return {
-        case_id,
-        title,
-        date,
-        dep_code,
-        dep_name,
-        region,
-        summary,
-        details,
-        classification,
-        updated_at,
-        source: source || "GEIPAN",
-        address: `${dep_name || ""}, ${region || ""}`,
-      };
-    });
-
-    // 6️⃣ Upsert (insert or update) u Supabase
-    const { error } = await supabase.from("reports").upsert(data, {
-      onConflict: "case_id",
-    });
-
-    if (error) {
-      console.error("❌ Supabase insert error:", error);
-      throw error;
+    // Validacija dostupnosti CSV-a
+    const checkResponse = await fetch(csvUrl, { method: "HEAD" });
+    if (!checkResponse.ok) {
+      throw new Error(`GEIPAN CSV not reachable (${checkResponse.status})`);
     }
 
-    console.log(`✅ GEIPAN import completed (${data.length} records)`);
-    return { imported: data.length };
-  } catch (err) {
-    console.error("❌ GEIPAN auto import error:", err);
-    throw err;
+    console.log("🔗 Fetching and importing CSV...");
+    const result = await importCsvFromUrl({
+      url: csvUrl,
+      source_name: "GEIPAN",
+      mapping: {
+        case_id: 0,
+        location: 1,
+        date: 2,
+        departement: 3,
+        region: 6,
+        description: 7,
+        classification: 11,
+        update_date: 12,
+        source: 13,
+      },
+    });
+
+    console.log(`✅ GEIPAN import finished: ${result.inserted || 0} records`);
+    return result;
+  } catch (error) {
+    console.error("❌ GEIPAN auto import error:", error);
+    return { success: false, error: error.message };
   }
 }
