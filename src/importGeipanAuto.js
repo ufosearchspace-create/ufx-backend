@@ -16,17 +16,22 @@ const GEIPAN_CSV_URL =
   "https://www.cnes-geipan.fr/sites/default/files/save_json_import_files/export_cas_pub_20250821093454.csv";
 
 /**
- * 🔧 Ultra-robustan parser koji čisti CSV prije parsiranja
- * Rješava: loše zatvorene navodnike, CR/LF razlike, html tagove, razmake, BOM...
+ * 🔧 Super robustan parser koji normalizira navodnike i uklanja sve problematične bajtove
  */
 function cleanAndParseCsv(csvText) {
   try {
     let cleaned = csvText
-      .replace(/\r\n/g, "\n")                 // normalizira linije
-      .replace(/""/g, '"')                    // dupli navodnici → jednostruki
-      .replace(/\n\s*"\s*\n/g, "\n")          // lomi neispravne navodnike
-      .replace(/<\/?[^>]+(>|$)/g, "")         // makni HTML tagove
-      .replace(/\uFEFF/g, "");                // BOM fix
+      // normalizacija linija i BOM
+      .replace(/\r\n/g, "\n")
+      .replace(/\uFEFF/g, "")
+      // zamjena francuskih i tipografskih navodnika u normalne "
+      .replace(/[“”„‟«»‹›]/g, '"')
+      .replace(/[’‘‚‛]/g, "'")
+      // ukloni HTML oznake i čudne kontrolne znakove
+      .replace(/<\/?[^>]+(>|$)/g, "")
+      .replace(/[^\x20-\x7E\n\r,"']/g, "")
+      // dupli navodnici → jednostruki
+      .replace(/""/g, '"');
 
     const records = parse(cleaned, {
       columns: true,
@@ -49,7 +54,7 @@ function cleanAndParseCsv(csvText) {
 }
 
 /**
- * GEIPAN → naša baza
+ * GEIPAN → struktura baze
  */
 function mapGeipanRecord(row) {
   return {
@@ -68,7 +73,7 @@ function mapGeipanRecord(row) {
 }
 
 /**
- * Glavni endpoint
+ * Glavni endpoint za auto import
  */
 router.post("/geipan-auto", async (req, res) => {
   const cronToken = req.query.cron_token;
