@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { parse } from "csv-parse/sync";
 import { createClient } from "@supabase/supabase-js";
+import iconv from "iconv-lite";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -21,26 +22,25 @@ export async function importGeipanAuto() {
     throw new Error(`CSV file not found at ${csvPath}`);
   }
 
-  const csvData = fs.readFileSync(csvPath, "utf-8");
+  // ✅ Učitaj CSV kao buffer i konvertiraj u UTF-8 (podržava ISO-8859-1)
+  const buffer = fs.readFileSync(csvPath);
+  const csvData = iconv.decode(buffer, "utf-8").replace(/\r\n/g, "\n");
 
-  // ✅ Parse CSV safely
   let records = [];
   try {
     records = parse(csvData, {
       columns: true,
       skip_empty_lines: true,
-      relax_quotes: true,
       relax_column_count: true,
-      trim: true,
+      relax_quotes: true,
       delimiter: ";",
+      trim: true,
       on_record: (record, { lines }) => {
-        // Basic validation
         if (!record["Numéro cas"] || !record["Date d'observation"]) {
           console.warn(`⚠️ Skipping bad CSV line ${lines}`);
           return null;
         }
 
-        // Clean and normalize
         return {
           case_id: record["Numéro cas"]?.trim() || null,
           date_obs: record["Date d'observation"]?.trim() || null,
@@ -62,15 +62,11 @@ export async function importGeipanAuto() {
 
   console.log(`📄 Parsed ${records.length} rows from CSV`);
 
-  // ✅ Filter out null or empty records
-  const validRecords = records.filter(
-    (r) => r && r.case_id && r.date_obs
-  );
+  const validRecords = records.filter((r) => r && r.case_id && r.date_obs);
   console.log(
     `🧹 Skipped ${records.length - validRecords.length} malformed/blank rows`
   );
 
-  // ✅ Remove duplicates (keep first occurrence)
   const uniqueRecords = [];
   const seen = new Set();
   for (const rec of validRecords) {
@@ -85,7 +81,6 @@ export async function importGeipanAuto() {
   );
   console.log(`✅ Ready to insert ${uniqueRecords.length} unique records`);
 
-  // ✅ Insert or update (upsert)
   const { error } = await supabase
     .from("reports")
     .upsert(uniqueRecords, { onConflict: "case_id" });
