@@ -1,96 +1,107 @@
 // src/importNuforcGithub.js
+import express from "express";
+import Papa from "papaparse";
 import fetch from "node-fetch";
-import { parse } from "csv-parse/sync";
-import { createHash } from "crypto";
 import { supabase } from "./supabase.js";
 import { ensureString, parseNumberOrNull } from "./util.js";
 
+const router = express.Router();
+
 /**
- * Koristimo GitHub mirror NUFORC-a od Timothy Renner-a
- * (stabilan CSV, bez scrapanja i rate-limit problema).
+ * Fetch NUFORC CSV (npr. https://nuforc.org/webreports/ndxe2025.csv)
+ * i uvozi zapise u Supabase -> tablica "reports"
  */
-const NUFORC_GH_CSV =
-  "https://raw.githubusercontent.com/timothyrenner/nuforc_sightings_data/master/data/nuforc_reports.csv";
+router.post("/api/import/nuforc-auto", async (req, res) => {
+  const { cron_token } = req.query;
+  const CRON_TOKEN = process.env.CRON_TOKEN;
 
-// Batch veličina kako ne bi opteretili PostgREST
-const BATCH_SIZE = 500;
+  if (cron_token !== CRON_TOKEN) {
+    return res.status(403).json({ success: false, error: "Invalid cron token" });
+  }
 
-export async function importNuforcGithub() {
-  console.log("🚀 Starting NUFORC GitHub import...");
-  console.log("📦 Fetching CSV:", NUFORC_GH_CSV);
+  const sourceUrl = "https://nuforc.org/webreports/ndxe2025.csv";
+  console.log("🚀 Starting NUFORC automatic import...");
+  console.log("📦 Fetching CSV from:", sourceUrl);
 
-  const resp = await fetch(NUFORC_GH_CSV, { timeout: 30000 });
-  if (!resp.ok) throw new Error(`NUFORC CSV fetch failed with status ${resp.status}`);
-  const text = await resp.text();
+  try {
+    const response = await fetch(sourceUrl);
+    if (!response.ok) throw new Error(`NUFORC CSV download failed: ${response.statusText}`);
+    const csvText = await response.text();
 
-  // CSV je coma-delimited i uvijek ima header
-  const rows = parse(text, {
-    columns: true,
-    skip_empty_lines: true,
-    trim: true
-  });
+    // ✅ Automatsko prepoznavanje delimitera
+    const delimiter = csvText.includes(";") ? ";" : ",";
+    console.log("🔍 Detected delimiter:", delimiter);
 
-  console.log(`📄 Parsed ${rows.length} NUFORC rows`);
-
-  // Očekivana polja (po datasetu):
-  // date_time, city, state, country, shape, duration, summary, report_link, posted, city_latitude, city_longitude
-  const mapped = [];
-  for (const r of rows) {
-    const date_event = ensureString(r.date_time).trim() || null;
-    const description = ensureString(r.summary).trim() || null;
-
-    // Ako baš nema opisa, preskoči — ne želimo prazne zapise
-    if (!description) continue;
-
-    const city = ensureString(r.city).trim() || null;
-    const state = ensureString(r.state).trim() || null;
-    const country = ensureString(r.country).trim() || null;
-    const shape = ensureString(r.shape).trim() || null;
-    const duration = ensureString(r.duration).trim() || null;
-    const report_link = ensureString(r.report_link).trim() || null;
-    const latitude = parseNumberOrNull(r.city_latitude);
-    const longitude = parseNumberOrNull(r.city_longitude);
-
-    const location = [city, state, country].filter(Boolean).join(", ") || null;
-
-    // Stabilan hash za dedupe — koristimo kombinaciju izvora i ključnih polja:
-    const hash = createHash("sha256")
-      .update(`nuforc|${date_event || ""}|${latitude || ""}|${longitude || ""}|${description}`)
-      .digest("hex");
-
-    mapped.push({
-      source: "nuforc",
-      source_type: "external",
-      ref_id: report_link || null, // kasnije može pomoći za deep-link
-      date_event,
-      description,
-      city,
-      state,
-      country,
-      shape,
-      duration,
-      latitude,
-      longitude,
-      location,
-      image_url: null,   // NUFORC nema slike (ostavljamo null)
-      hash
+    // 📄 Parsiranje CSV-a
+    const parsed = Papa.parse(csvText, {
+      header: true,
+      skipEmptyLines: true,
+      delimiter,
     });
-  }
 
-  console.log(`🧹 Cleaned ${mapped.length} valid NUFORC records`);
+    const rows = parsed.data;
+    console.log(`📄 Parsed ${rows.length} NUFORC records`);
 
-  // Upsert u batch-evima s onConflict: 'hash'
-  let insertedTotal = 0;
-  for (let i = 0; i < mapped.length; i += BATCH_SIZE) {
-    const chunk = mapped.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase.from("reports").upsert(chunk, { onConflict: "hash" });
-    if (error) {
-      console.error("❌ Upsert chunk error:", error);
-      throw error;
+    if (!rows.length) {
+      return res.json({ success: true, count: 0, message: "No NUFORC data found." });
     }
-    insertedTotal += chunk.length;
-  }
 
-  console.log(`✅ Upserted ${insertedTotal} NUFORC rows (dedup via hash)`);
-  return { count: insertedTotal };
-}
+    // 🧹 Pretvaranje CSV zapisa u oblik za bazu
+    const cleaned = rows
+      .map((r) => {
+        const date = ensureString(r["Date / Time"]);
+        const city = ensureString(r["City"]);
+        const state = ensureString(r["State"]);
+        const shape = ensureString(r["Shape"]);
+        const summary = ensureString(r["Summary"]);
+        const posted = ensureString(r["Posted"]);
+        const duration = ensureString(r["Duration"]);
+
+        if (!city && !summary) return null;
+
+        return {
+          date_event: date || null,
+          description: summary || null,
+          source: "NUFORC",
+          location: [city, state].filter(Boolean).join(", "),
+          latitude: null,
+          longitude: null,
+          shape,
+          duration,
+          media_url: null,
+          hash: `${date}-${city}-${state}-${shape}-${summary}`.replace(/\s+/g, "_").slice(0, 255),
+        };
+      })
+      .filter(Boolean);
+
+    console.log(`🧹 Cleaned ${cleaned.length} valid NUFORC records`);
+
+    if (!cleaned.length) {
+      return res.json({ success: true, count: 0, message: "No valid NUFORC entries found." });
+    }
+
+    // 🧠 Uklanjanje duplikata (po hash-u)
+    const unique = Object.values(
+      cleaned.reduce((acc, rec) => {
+        acc[rec.hash] = rec;
+        return acc;
+      }, {})
+    );
+
+    console.log(`✅ Ready to insert ${unique.length} unique NUFORC records`);
+
+    const { error } = await supabase.from("reports").upsert(unique, {
+      onConflict: "hash",
+    });
+
+    if (error) throw error;
+
+    console.log(`✅ Successfully upserted ${unique.length} NUFORC records`);
+    return res.json({ success: true, count: unique.length });
+  } catch (err) {
+    console.error("❌ NUFORC auto import error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+export default router;
