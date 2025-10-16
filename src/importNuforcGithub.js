@@ -29,9 +29,8 @@ const parseDate = (dateStr) => {
 // Čisti tekst
 const cleanText = (text) => {
   if (!text || typeof text !== 'string') return null;
-  return text
-    .replace(/[
-\u0000-\u001F\u007F-\u009F]/g, " ")
+   return text
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 };
