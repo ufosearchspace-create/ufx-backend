@@ -1,10 +1,29 @@
 // src/util.js
-export function ensureString(v) {
-  return typeof v === "string" ? v : (v === null || v === undefined ? "" : String(v));
+
+export const ok = () => ({ ok: true });
+
+export function isValidLat(x) {
+  const n = Number(x);
+  return Number.isFinite(n) && n >= -90 && n <= 90;
+}
+export function isValidLon(x) {
+  const n = Number(x);
+  return Number.isFinite(n) && n >= -180 && n <= 180;
 }
 
-export function parseNumberOrNull(v) {
-  if (v === null || v === undefined || v === "") return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+/**
+ * Jednostavna admin zaštita:
+ *  - query: ?admin_token=...
+ *  - ili header: x-admin-token: ...
+ */
+export function adminGuard(req, res, next) {
+  const want = process.env.ADMIN_TOKEN;
+  if (!want) {
+    return res.status(500).json({ success: false, error: "ADMIN_TOKEN not configured" });
+  }
+  const got = req.query.admin_token || req.headers["x-admin-token"];
+  if (got !== want) {
+    return res.status(401).json({ success: false, error: "unauthorized" });
+  }
+  next();
 }

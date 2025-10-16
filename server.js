@@ -1,139 +1,114 @@
 // server.js
 import express from "express";
-import dotenv from "dotenv";
 import bodyParser from "body-parser";
-import fetch from "node-fetch";
-import { createHash } from "crypto";
+import cors from "cors";
 
+import nuforcGithubRouter from "./src/importNuforcGithub.js"; // NUFORC importer (GitHub CSV ili web CSV)
+import camerasRouter from "./src/cameras.js";                 // nove kamere rute
+import aiVerifyRouter from "./src/aiVerify.js";               // AI verifikacija (placeholder)
 import { supabase } from "./src/supabase.js";
-import { importNuforcGithub } from "./src/importNuforcGithub.js";
-import { ensureString } from "./src/util.js";
-
-dotenv.config();
+import { isValidLat, isValidLon, adminGuard, ok } from "./src/util.js";
 
 const app = express();
-app.use(bodyParser.json({ limit: "2mb" }));
+const PORT = process.env.PORT || 10000;
 
-// ---------- Helper: secure cron ----------
-function checkCronToken(req) {
-  const token = req.query.cron_token || req.headers["x-cron-token"];
-  if (!process.env.CRON_TOKEN) return true; // ako nije postavljen, pusti (dev)
-  return token === process.env.CRON_TOKEN;
-}
+app.use(cors());
+app.use(bodyParser.json({ limit: "10mb" }));
 
-// ---------- Health ----------
-app.get("/health", (req, res) => {
-  res.json({ ok: true });
-});
+// ---- ENV logs (sanitizirano) ----
+console.log("🧩 ENV CHECK START");
+console.log("SUPABASE_URL:", process.env.SUPABASE_URL);
+console.log("SUPABASE_SERVICE_ROLE_KEY:", process.env.SUPABASE_SERVICE_ROLE_KEY ? "✅ Set" : "❌ Missing");
+console.log("CRON_TOKEN:", process.env.CRON_TOKEN || "❌ Missing");
+console.log("ADMIN_TOKEN:", process.env.ADMIN_TOKEN ? "✅ Set" : "❌ Missing (required for POST /api/cameras)");
+console.log("NODE_ENV:", process.env.NODE_ENV || "dev");
+console.log("🧩 ENV CHECK END");
 
-// ---------- GET /api/reports (list) ----------
+// ---- Health ----
+app.get("/health", (req, res) => res.json({ ok: true }));
+
+// ---- Reports: GET (list) ----
 app.get("/api/reports", async (req, res) => {
   try {
-    const { limit = 100, offset = 0 } = req.query;
-    const { data, error, count } = await supabase
+    const limit = Math.min(parseInt(req.query.limit || "100", 10), 1000);
+    const { data, error } = await supabase
       .from("reports")
-      .select("*", { count: "exact" })
+      .select("*")
       .order("created_at", { ascending: false })
-      .range(Number(offset), Number(offset) + Number(limit) - 1);
+      .limit(limit);
 
     if (error) throw error;
-    res.json({ success: true, count, data });
-  } catch (e) {
-    console.error("GET /api/reports error:", e);
-    res.status(500).json({ success: false, error: e.message });
+    res.json({ success: true, count: data?.length || 0, data });
+  } catch (err) {
+    console.error("GET /api/reports error:", err);
+    res.status(500).json({ success: false, error: String(err.message || err) });
   }
 });
 
-// ---------- POST /api/reports (user submit) ----------
+// ---- Reports: POST (user submit) ----
 app.post("/api/reports", async (req, res) => {
   try {
     const {
       description,
       latitude,
       longitude,
-      location,      // npr. "Zagreb, Croatia"
-      date_event,    // ISO string ili null
-      image_url,     // opcionalno
-      media_url      // kompatibilnost s ranijim poljem
+      location,
+      media_url,
+      thumbnail_url,
+      date_event, // ISO string ili null
     } = req.body || {};
 
-    // Minimal validation
-    const desc = ensureString(description).trim();
-    if (!desc) return res.status(400).json({ success: false, error: "description is required" });
-
-    const lat = latitude !== undefined ? Number(latitude) : null;
-    const lon = longitude !== undefined ? Number(longitude) : null;
-    const loc = ensureString(location).trim() || null;
-    const when = ensureString(date_event).trim() || null;
-    const img = ensureString(image_url || media_url).trim() || null;
-
-    // Stabilan hash za dedupe (user-source):
-    const hash = createHash("sha256")
-      .update(`user|${when || ""}|${lat || ""}|${lon || ""}|${desc}`)
-      .digest("hex");
+    if (!description || typeof description !== "string") {
+      return res.status(400).json({ success: false, error: "description is required" });
+    }
+    if (latitude != null && !isValidLat(latitude)) {
+      return res.status(400).json({ success: false, error: "invalid latitude" });
+    }
+    if (longitude != null && !isValidLon(longitude)) {
+      return res.status(400).json({ success: false, error: "invalid longitude" });
+    }
 
     const payload = {
-      description: desc,
-      latitude: lat,
-      longitude: lon,
-      location: loc,
-      date_event: when,
-      image_url: img,
-      source: "user",
-      source_type: "user",
-      hash
+      description,
+      lat: latitude ?? null,
+      lon: longitude ?? null,
+      address: location ?? null,
+      media_url: media_url ?? null,
+      thumbnail_url: thumbnail_url ?? null,
+      date_event: date_event ? new Date(date_event).toISOString() : null,
+      source_name: "USER",
+      source_type: "USER",
+      verified_by_ai: false,
     };
 
-    const { data, error } = await supabase
-      .from("reports")
-      .upsert([payload], { onConflict: "hash" });
-
+    const { data, error } = await supabase.from("reports").insert([payload]).select();
     if (error) throw error;
-    res.json({ success: true, data });
-  } catch (e) {
-    console.error("POST /api/reports error:", e);
-    res.status(500).json({ success: false, error: e.message });
+
+    res.json({ success: true, data: data?.[0] ?? null });
+  } catch (err) {
+    console.error("POST /api/reports error:", err);
+    res.status(500).json({ success: false, error: String(err.message || err) });
   }
 });
 
-// ---------- POST /api/import/nuforc-github ----------
-app.post("/api/import/nuforc-github", async (req, res) => {
-  try {
-    if (!checkCronToken(req)) return res.status(401).json({ success: false, error: "Invalid cron token" });
+// ---- NUFORC import (GitHub / web CSV) ----
+// Cron zaštita preko ?cron_token=...
+app.use("/api/import", nuforcGithubRouter);
 
-    const result = await importNuforcGithub();
-    res.json({ success: true, ...result });
-  } catch (e) {
-    console.error("NUFORC GitHub import error:", e);
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
+// ---- Kamere (GET public, POST admin) ----
+app.use("/api/cameras", camerasRouter);
 
-/** ===========================
- *  FUTURE ENDPOINT HOOKS (OFF)
- *  ===========================
- *  // 1) Public sky cams (read-only registry of cameras)
- *  // 2) AI media verification (Google AI / Vertex / Gemini)
- *  Ostavio sam hookove ispod — ne aktiviramo dok ne odlučiš:
- */
+// ---- AI verifikacija (placeholder endpointi) ----
+app.use("/api", aiVerifyRouter);
 
-// Example placeholders (disabled):
-/*
-app.get("/api/cams", async (req, res) => {
-  // TODO: return list of public cams (from 'cams' table)
-});
-app.post("/api/ai/verify-media", async (req, res) => {
-  // TODO: upload image_url -> AI service -> return verdict
-});
-*/
-
-const PORT = process.env.PORT || 10000;
+// ---- Start ----
 app.listen(PORT, () => {
-  console.log("🧩 ENV CHECK START");
-  console.log("SUPABASE_URL:", process.env.SUPABASE_URL);
-  console.log("SUPABASE_SERVICE_ROLE_KEY:", process.env.SUPABASE_SERVICE_ROLE_KEY ? "✅ Set" : "❌ Missing");
-  console.log("CRON_TOKEN:", process.env.CRON_TOKEN || "(not set)");
-  console.log("NODE_ENV:", process.env.NODE_ENV || "(not set)");
-  console.log("🧩 ENV CHECK END");
   console.log(`✅ UFX backend running on port ${PORT}`);
+  console.log("     ==> Your service is live 🎉");
+  console.log("     ==> ");
+  console.log("     ==> ///////////////////////////////////////////////////////////");
+  console.log("     ==> ");
+  console.log("     ==> Available at your primary URL https://ufx-backend-1.onrender.com");
+  console.log("     ==> ");
+  console.log("     ==> ///////////////////////////////////////////////////////////");
 });
