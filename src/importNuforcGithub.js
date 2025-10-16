@@ -1,106 +1,131 @@
 // src/importNuforcGithub.js
-import express from "express";
-import Papa from "papaparse";
-import fetch from "node-fetch";
-import { supabase } from "./supabase.js";
-import { ensureString, parseNumberOrNull } from "./util.js";
+import express from 'express';
+import { parse } from 'csv-parse';
+import fetch from 'node-fetch';
+import { supabase } from './supabase.js';
+import { cronGuard } from './util.js';
 
 const router = express.Router();
 
-/**
- * Fetch NUFORC CSV (npr. https://nuforc.org/webreports/ndxe2025.csv)
- * i uvozi zapise u Supabase -> tablica "reports"
- */
-router.post("/api/import/nuforc-auto", async (req, res) => {
-  const { cron_token } = req.query;
-  const CRON_TOKEN = process.env.CRON_TOKEN;
-
-  if (cron_token !== CRON_TOKEN) {
-    return res.status(403).json({ success: false, error: "Invalid cron token" });
-  }
-
-  const sourceUrl = "https://nuforc.org/webreports/ndxe2025.csv";
-  console.log("🚀 Starting NUFORC automatic import...");
-  console.log("📦 Fetching CSV from:", sourceUrl);
-
+// Pomoćna funkcija za pretvaranje datuma
+const parseDate = (dateStr) => {
   try {
-    const response = await fetch(sourceUrl);
-    if (!response.ok) throw new Error(`NUFORC CSV download failed: ${response.statusText}`);
-    const csvText = await response.text();
+    return new Date(dateStr).toISOString();
+  } catch (e) {
+    return null;
+  }
+};
 
-    // ✅ Automatsko prepoznavanje delimitera
-    const delimiter = csvText.includes(";") ? ";" : ",";
-    console.log("🔍 Detected delimiter:", delimiter);
+// Pomoćna funkcija za čišćenje teksta
+const cleanText = (text) => {
+  if (!text) return null;
+  return text.replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+};
 
-    // 📄 Parsiranje CSV-a
-    const parsed = Papa.parse(csvText, {
-      header: true,
-      skipEmptyLines: true,
-      delimiter,
+// Glavna funkcija za import podataka
+const importNuforcData = async () => {
+  try {
+    console.log("🛸 Starting NUFORC import...");
+    
+    // URL NUFORC CSV datoteke (example URL - trebat ćete pravi URL)
+    const csvUrl = "https://raw.githubusercontent.com/data-world-ufo/nuforc-reports/main/nuforc_reports.csv";
+    
+    const response = await fetch(csvUrl);
+    if (!response.ok) throw new Error(`Failed to fetch CSV: ${response.statusText}`);
+    
+    const records = [];
+    let processedCount = 0;
+    
+    // Parsiranje CSV-a
+    const parser = parse({
+      columns: true,
+      skip_empty_lines: true
     });
 
-    const rows = parsed.data;
-    console.log(`📄 Parsed ${rows.length} NUFORC records`);
+    parser.on('readable', async () => {
+      let record;
+      while ((record = parser.read()) !== null) {
+        try {
+          const cleanRecord = {
+            date_event: parseDate(record.date_time),
+            city: cleanText(record.city),
+            state: cleanText(record.state),
+            country: cleanText(record.country),
+            shape: cleanText(record.shape),
+            duration: cleanText(record.duration),
+            description: cleanText(record.text),
+            lat: parseFloat(record.latitude) || null,
+            lon: parseFloat(record.longitude) || null,
+            source_name: "NUFORC",
+            source_type: "HISTORICAL",
+            original_id: record.nuforc_id || null,
+            verified_by_ai: false
+          };
 
-    if (!rows.length) {
-      return res.json({ success: true, count: 0, message: "No NUFORC data found." });
-    }
+          if (cleanRecord.date_event) {
+            records.push(cleanRecord);
+          }
 
-    // 🧹 Pretvaranje CSV zapisa u oblik za bazu
-    const cleaned = rows
-      .map((r) => {
-        const date = ensureString(r["Date / Time"]);
-        const city = ensureString(r["City"]);
-        const state = ensureString(r["State"]);
-        const shape = ensureString(r["Shape"]);
-        const summary = ensureString(r["Summary"]);
-        const posted = ensureString(r["Posted"]);
-        const duration = ensureString(r["Duration"]);
-
-        if (!city && !summary) return null;
-
-        return {
-          date_event: date || null,
-          description: summary || null,
-          source: "NUFORC",
-          location: [city, state].filter(Boolean).join(", "),
-          latitude: null,
-          longitude: null,
-          shape,
-          duration,
-          media_url: null,
-          hash: `${date}-${city}-${state}-${shape}-${summary}`.replace(/\s+/g, "_").slice(0, 255),
-        };
-      })
-      .filter(Boolean);
-
-    console.log(`🧹 Cleaned ${cleaned.length} valid NUFORC records`);
-
-    if (!cleaned.length) {
-      return res.json({ success: true, count: 0, message: "No valid NUFORC entries found." });
-    }
-
-    // 🧠 Uklanjanje duplikata (po hash-u)
-    const unique = Object.values(
-      cleaned.reduce((acc, rec) => {
-        acc[rec.hash] = rec;
-        return acc;
-      }, {})
-    );
-
-    console.log(`✅ Ready to insert ${unique.length} unique NUFORC records`);
-
-    const { error } = await supabase.from("reports").upsert(unique, {
-      onConflict: "hash",
+          processedCount++;
+          if (records.length >= 1000) {
+            // Batch insert svakih 1000 zapisa
+            const { error } = await supabase
+              .from('reports')
+              .upsert(records, {
+                onConflict: 'original_id',
+                ignoreDuplicates: true
+              });
+            
+            if (error) throw error;
+            records.length = 0; // Clear array
+            console.log(`Processed ${processedCount} records...`);
+          }
+        } catch (err) {
+          console.error("Error processing record:", err);
+        }
+      }
     });
 
-    if (error) throw error;
+    // Završna obrada preostalih zapisa
+    parser.on('end', async () => {
+      if (records.length > 0) {
+        try {
+          const { error } = await supabase
+            .from('reports')
+            .upsert(records, {
+              onConflict: 'original_id',
+              ignoreDuplicates: true
+            });
+          
+          if (error) throw error;
+        } catch (err) {
+          console.error("Error in final batch:", err);
+        }
+      }
+      console.log(`✅ Import completed. Total processed: ${processedCount}`);
+    });
 
-    console.log(`✅ Successfully upserted ${unique.length} NUFORC records`);
-    return res.json({ success: true, count: unique.length });
+    // Stream CSV podaci u parser
+    response.body.pipe(parser);
+
   } catch (err) {
-    console.error("❌ NUFORC auto import error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    console.error("❌ Import failed:", err);
+    throw err;
+  }
+};
+
+// API rute
+router.get('/nuforc', cronGuard, async (req, res) => {
+  try {
+    await importNuforcData();
+    res.json({ success: true, message: "NUFORC import started" });
+  } catch (err) {
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
   }
 });
 

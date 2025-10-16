@@ -2,46 +2,122 @@
 import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
+import dotenv from 'dotenv';
 
-import nuforcGithubRouter from "./src/importNuforcGithub.js"; // NUFORC importer (GitHub CSV ili web CSV)
-import camerasRouter from "./src/cameras.js";                 // nove kamere rute
-import aiVerifyRouter from "./src/aiVerify.js";               // AI verifikacija (placeholder)
+import nuforcGithubRouter from "./src/importNuforcGithub.js"; // NUFORC importer
+import camerasRouter from "./src/cameras.js";                 // camera routes
+import aiVerifyRouter from "./src/aiVerify.js";              // AI verification
 import { supabase } from "./src/supabase.js";
-import { isValidLat, isValidLon, adminGuard, ok } from "./src/util.js";
+import { isValidLat, isValidLon, adminGuard, cronGuard } from "./src/util.js";
+
+// Učitaj environment varijable
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// Middleware
 app.use(cors());
 app.use(bodyParser.json({ limit: "10mb" }));
 
 // ---- ENV logs (sanitizirano) ----
 console.log("🧩 ENV CHECK START");
-console.log("SUPABASE_URL:", process.env.SUPABASE_URL);
+console.log("SUPABASE_URL:", process.env.SUPABASE_URL ? "✅ Set" : "❌ Missing");
 console.log("SUPABASE_SERVICE_ROLE_KEY:", process.env.SUPABASE_SERVICE_ROLE_KEY ? "✅ Set" : "❌ Missing");
-console.log("CRON_TOKEN:", process.env.CRON_TOKEN || "❌ Missing");
-console.log("ADMIN_TOKEN:", process.env.ADMIN_TOKEN ? "✅ Set" : "❌ Missing (required for POST /api/cameras)");
-console.log("NODE_ENV:", process.env.NODE_ENV || "dev");
+console.log("CRON_TOKEN:", process.env.CRON_TOKEN ? "✅ Set" : "❌ Missing");
+console.log("NODE_ENV:", process.env.NODE_ENV || "development");
 console.log("🧩 ENV CHECK END");
 
-// ---- Health ----
-app.get("/health", (req, res) => res.json({ ok: true }));
+// ---- Health check endpoint ----
+app.get("/health", (req, res) => res.json({ 
+  status: "healthy",
+  timestamp: new Date().toISOString()
+}));
 
 // ---- Reports: GET (list) ----
 app.get("/api/reports", async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit || "100", 10), 1000);
-    const { data, error } = await supabase
+    const {
+      limit = 100,
+      offset = 0,
+      start_date,
+      end_date,
+      search
+    } = req.query;
+
+    let query = supabase
       .from("reports")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(limit);
+      .select("*", { count: "exact" });
+
+    // Primjeni filtere ako postoje
+    if (start_date) {
+      query = query.gte('date_event', start_date);
+    }
+    if (end_date) {
+      query = query.lte('date_event', end_date);
+    }
+    if (search) {
+      query = query.textSearch('description_search', search);
+    }
+
+    // Pagination
+    const limitNum = Math.min(parseInt(limit, 10), 1000);
+    const offsetNum = parseInt(offset, 10);
+    
+    query = query
+      .order('date_event', { ascending: false })
+      .range(offsetNum, offsetNum + limitNum - 1);
+
+    const { data, error, count } = await query;
 
     if (error) throw error;
-    res.json({ success: true, count: data?.length || 0, data });
+
+    res.json({
+      success: true,
+      count,
+      data
+    });
   } catch (err) {
     console.error("GET /api/reports error:", err);
-    res.status(500).json({ success: false, error: String(err.message || err) });
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// ---- Reports: GET (nearby) ----
+app.get("/api/reports/nearby", async (req, res) => {
+  try {
+    const { lat, lon, radius = 50 } = req.query; // radius u kilometrima
+    
+    if (!lat || !lon) {
+      return res.status(400).json({
+        success: false,
+        error: "Latitude and longitude are required"
+      });
+    }
+
+    const { data, error } = await supabase
+      .rpc('find_reports_within_radius', {
+        p_latitude: parseFloat(lat),
+        p_longitude: parseFloat(lon),
+        p_radius_km: parseFloat(radius)
+      });
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      count: data.length,
+      data
+    });
+  } catch (err) {
+    console.error('Error in nearby search:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
 });
 
@@ -58,14 +134,24 @@ app.post("/api/reports", async (req, res) => {
       date_event, // ISO string ili null
     } = req.body || {};
 
+    // Validacija
     if (!description || typeof description !== "string") {
-      return res.status(400).json({ success: false, error: "description is required" });
+      return res.status(400).json({
+        success: false,
+        error: "Description is required"
+      });
     }
     if (latitude != null && !isValidLat(latitude)) {
-      return res.status(400).json({ success: false, error: "invalid latitude" });
+      return res.status(400).json({
+        success: false,
+        error: "Invalid latitude"
+      });
     }
     if (longitude != null && !isValidLon(longitude)) {
-      return res.status(400).json({ success: false, error: "invalid longitude" });
+      return res.status(400).json({
+        success: false,
+        error: "Invalid longitude"
+      });
     }
 
     const payload = {
@@ -78,30 +164,103 @@ app.post("/api/reports", async (req, res) => {
       date_event: date_event ? new Date(date_event).toISOString() : null,
       source_name: "USER",
       source_type: "USER",
-      verified_by_ai: false,
+      verified_by_ai: false
     };
 
-    const { data, error } = await supabase.from("reports").insert([payload]).select();
+    const { data, error } = await supabase
+      .from("reports")
+      .insert([payload])
+      .select();
+
     if (error) throw error;
 
-    res.json({ success: true, data: data?.[0] ?? null });
+    res.json({
+      success: true,
+      data: data[0]
+    });
   } catch (err) {
     console.error("POST /api/reports error:", err);
-    res.status(500).json({ success: false, error: String(err.message || err) });
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
 });
 
-// ---- NUFORC import (GitHub / web CSV) ----
-// Cron zaštita preko ?cron_token=...
+// ---- Reports: GET (single) ----
+app.get("/api/reports/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data, error } = await supabase
+      .from("reports")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (error) throw error;
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        error: "Report not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      data
+    });
+  } catch (err) {
+    console.error(`GET /api/reports/${req.params.id} error:`, err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// ---- Reports: Stats ----
+app.get("/api/reports/stats/summary", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .rpc('get_reports_summary');
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      data
+    });
+  } catch (err) {
+    console.error("GET /api/reports/stats/summary error:", err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// ---- Import routes ----
 app.use("/api/import", nuforcGithubRouter);
 
-// ---- Kamere (GET public, POST admin) ----
+// ---- Camera routes ----
 app.use("/api/cameras", camerasRouter);
 
-// ---- AI verifikacija (placeholder endpointi) ----
+// ---- AI verification routes ----
 app.use("/api", aiVerifyRouter);
 
-// ---- Start ----
+// ---- Error handling middleware ----
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({
+    success: false,
+    error: process.env.NODE_ENV === 'production' 
+      ? 'Internal server error' 
+      : err.message
+  });
+});
+
+// ---- Start server ----
 app.listen(PORT, () => {
   console.log(`✅ UFX backend running on port ${PORT}`);
   console.log("     ==> Your service is live 🎉");
@@ -111,4 +270,12 @@ app.listen(PORT, () => {
   console.log("     ==> Available at your primary URL https://ufx-backend-1.onrender.com");
   console.log("     ==> ");
   console.log("     ==> ///////////////////////////////////////////////////////////");
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM signal received. Closing HTTP server...');
+  app.close(() => {
+    console.log('HTTP server closed');
+  });
 });
