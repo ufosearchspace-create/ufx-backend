@@ -27,3 +27,13 @@ export function adminGuard(req, res, next) {
   }
   next();
 }
+// --- Compatibility helpers for NUFORC importer ---
+export function ensureString(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
+
+export function parseNumberOrNull(value) {
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? n : null;
+}
