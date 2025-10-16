@@ -9,7 +9,7 @@ const router = express.Router();
 
 // KONFIGURACIJA
 const CONFIG = {
-  CSV_URL: "https://raw.githubusercontent.com/planetsig/ufo-reports/main/csv-data/ufo-scrubbed.csv",
+  CSV_URL: "https://corgis-edu.github.io/corgis/datasets/csv/ufo_sightings/ufo_sightings.csv",
   BATCH_SIZE: 500,
   TEST_LIMIT: 100
 };
@@ -30,7 +30,8 @@ const parseDate = (dateStr) => {
 const cleanText = (text) => {
   if (!text || typeof text !== 'string') return null;
   return text
-    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/[
+\u0000-\u001F\u007F-\u009F]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 };
@@ -84,24 +85,25 @@ const importNuforcData = async (testMode = false) => {
             return;
           }
 
-          const city = cleanText(record.city);
-          const state = cleanText(record.state);
-          const country = cleanText(record.country || 'USA');
+          // CORGIS dataset ima nested field names sa tačkama
+          const city = cleanText(record['Location.City']);
+          const state = cleanText(record['Location.State']);
+          const country = 'USA'; // CORGIS dataset je samo USA
           
           const cleanRecord = {
-            date_event: parseDate(record.datetime || record.date_time),
+            date_event: parseDate(record['Sighting.Date']),
             city: city,
             state: state,
             country: country,
             address: buildAddress(city, state, country),
-            shape: cleanText(record.shape)?.toLowerCase(),
-            duration: cleanText(record.duration),
-            description: cleanText(record.comments || record.description || record.text),
-            lat: parseCoordinate(record.latitude || record.lat),
-            lon: parseCoordinate(record.longitude || record.lon),
+            shape: cleanText(record['UFO.Shape'])?.toLowerCase(),
+            duration: cleanText(record['Sighting.Duration']),
+            description: cleanText(record['Sighting.Summary']),
+            lat: parseCoordinate(record['Location.Latitude']),
+            lon: parseCoordinate(record['Location.Longitude']),
             source_name: "NUFORC",
             source_type: "HISTORICAL",
-            original_id: cleanText(record.nuforc_id || record.id),
+            original_id: `corgis_${processedCount}`, // CORGIS nema ID, generiši jedinstveni
             verified_by_ai: false
           };
 
