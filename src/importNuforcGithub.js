@@ -7,124 +7,267 @@ import { cronGuard } from './util.js';
 
 const router = express.Router();
 
-// Pomoćna funkcija za pretvaranje datuma
+// KONFIGURACIJA
+const CONFIG = {
+  CSV_URL: "https://raw.githubusercontent.com/planetsig/ufo-reports/main/csv-data/ufo-scrubbed.csv",
+  BATCH_SIZE: 500,
+  TEST_LIMIT: 100
+};
+
+// Pretvara datum u ISO format
 const parseDate = (dateStr) => {
+  if (!dateStr) return null;
   try {
-    return new Date(dateStr).toISOString();
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return null;
+    return date.toISOString();
   } catch (e) {
     return null;
   }
 };
 
-// Pomoćna funkcija za čišćenje teksta
+// Čisti tekst
 const cleanText = (text) => {
-  if (!text) return null;
-  return text.replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
-            .replace(/\s+/g, " ")
-            .trim();
+  if (!text || typeof text !== 'string') return null;
+  return text
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 };
 
-// Glavna funkcija za import podataka
-const importNuforcData = async () => {
-  try {
-    console.log("🛸 Starting NUFORC import...");
-    
-    // URL NUFORC CSV datoteke (example URL - trebat ćete pravi URL)
-    const csvUrl = "https://raw.githubusercontent.com/data-world-ufo/nuforc-reports/main/nuforc_reports.csv";
-    
-    const response = await fetch(csvUrl);
-    if (!response.ok) throw new Error(`Failed to fetch CSV: ${response.statusText}`);
-    
-    const records = [];
-    let processedCount = 0;
-    
-    // Parsiranje CSV-a
-    const parser = parse({
-      columns: true,
-      skip_empty_lines: true
-    });
+// Parsira koordinate
+const parseCoordinate = (value) => {
+  if (!value) return null;
+  const num = parseFloat(value);
+  return isNaN(num) ? null : num;
+};
 
-    parser.on('readable', async () => {
-      let record;
-      while ((record = parser.read()) !== null) {
+// Kombinira city, state, country
+const buildAddress = (city, state, country) => {
+  const parts = [city, state, country].filter(Boolean);
+  return parts.length > 0 ? parts.join(', ') : null;
+};
+
+// GLAVNA IMPORT FUNKCIJA
+const importNuforcData = async (testMode = false) => {
+  return new Promise(async (resolve, reject) => {
+    try {
+      console.log("🛸 ========================================");
+      console.log("🛸 Starting NUFORC import...");
+      console.log(`🛸 Mode: ${testMode ? 'TEST (100 records)' : 'FULL IMPORT'}`);
+      console.log("🛸 ========================================");
+      
+      const response = await fetch(CONFIG.CSV_URL);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch CSV: ${response.status}`);
+      }
+      
+      console.log("✅ CSV file fetched successfully");
+
+      let records = [];
+      let processedCount = 0;
+      let insertedCount = 0;
+      let errorCount = 0;
+      const startTime = Date.now();
+
+      const parser = parse({
+        columns: true,
+        skip_empty_lines: true,
+        relax_column_count: true
+      });
+
+      parser.on('data', (record) => {
         try {
+          if (testMode && processedCount >= CONFIG.TEST_LIMIT) {
+            parser.pause();
+            parser.destroy();
+            return;
+          }
+
+          const city = cleanText(record.city);
+          const state = cleanText(record.state);
+          const country = cleanText(record.country || 'USA');
+          
           const cleanRecord = {
-            date_event: parseDate(record.date_time),
-            city: cleanText(record.city),
-            state: cleanText(record.state),
-            country: cleanText(record.country),
-            shape: cleanText(record.shape),
+            date_event: parseDate(record.datetime || record.date_time),
+            city: city,
+            state: state,
+            country: country,
+            address: buildAddress(city, state, country),
+            shape: cleanText(record.shape)?.toLowerCase(),
             duration: cleanText(record.duration),
-            description: cleanText(record.text),
-            lat: parseFloat(record.latitude) || null,
-            lon: parseFloat(record.longitude) || null,
+            description: cleanText(record.comments || record.description || record.text),
+            lat: parseCoordinate(record.latitude || record.lat),
+            lon: parseCoordinate(record.longitude || record.lon),
             source_name: "NUFORC",
             source_type: "HISTORICAL",
-            original_id: record.nuforc_id || null,
+            original_id: cleanText(record.nuforc_id || record.id),
             verified_by_ai: false
           };
 
-          if (cleanRecord.date_event) {
+          if (cleanRecord.description && cleanRecord.date_event) {
             records.push(cleanRecord);
           }
 
           processedCount++;
-          if (records.length >= 1000) {
-            // Batch insert svakih 1000 zapisa
-            const { error } = await supabase
-              .from('reports')
-              .upsert(records, {
-                onConflict: 'original_id',
-                ignoreDuplicates: true
-              });
-            
-            if (error) throw error;
-            records.length = 0; // Clear array
-            console.log(`Processed ${processedCount} records...`);
+
+          if (processedCount % 1000 === 0) {
+            console.log(`📊 Progress: ${processedCount} records processed...`);
           }
-        } catch (err) {
-          console.error("Error processing record:", err);
-        }
-      }
-    });
 
-    // Završna obrada preostalih zapisa
-    parser.on('end', async () => {
-      if (records.length > 0) {
-        try {
-          const { error } = await supabase
-            .from('reports')
-            .upsert(records, {
-              onConflict: 'original_id',
-              ignoreDuplicates: true
-            });
+        } catch (err) {
+          errorCount++;
+          console.error("❌ Error processing record:", err.message);
+        }
+
+        if (records.length >= CONFIG.BATCH_SIZE) {
+          parser.pause();
           
-          if (error) throw error;
-        } catch (err) {
-          console.error("Error in final batch:", err);
+          insertBatch(records)
+            .then((count) => {
+              insertedCount += count;
+              records = [];
+              parser.resume();
+            })
+            .catch((err) => {
+              console.error("❌ Batch insert error:", err.message);
+              parser.resume();
+            });
         }
-      }
-      console.log(`✅ Import completed. Total processed: ${processedCount}`);
-    });
+      });
 
-    // Stream CSV podaci u parser
-    response.body.pipe(parser);
+      parser.on('error', (err) => {
+        console.error("❌ Parser error:", err);
+        reject(err);
+      });
 
+      parser.on('end', async () => {
+        console.log("📦 Stream ended, processing final batch...");
+        
+        if (records.length > 0) {
+          try {
+            const count = await insertBatch(records);
+            insertedCount += count;
+          } catch (err) {
+            console.error("❌ Final batch error:", err.message);
+          }
+        }
+
+        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+        
+        console.log("🛸 ========================================");
+        console.log("✅ NUFORC IMPORT COMPLETED!");
+        console.log(`📊 Total processed: ${processedCount}`);
+        console.log(`✅ Successfully inserted: ${insertedCount}`);
+        console.log(`❌ Errors: ${errorCount}`);
+        console.log(`⏱️  Duration: ${duration}s`);
+        console.log("🛸 ========================================");
+
+        resolve({
+          processed: processedCount,
+          inserted: insertedCount,
+          errors: errorCount,
+          duration: duration
+        });
+      });
+
+      response.body.pipe(parser);
+
+    } catch (err) {
+      console.error("❌ Import failed:", err);
+      reject(err);
+    }
+  });
+};
+
+// BATCH INSERT
+const insertBatch = async (records) => {
+  try {
+    const { data, error } = await supabase
+      .from('reports')
+      .upsert(records, {
+        onConflict: 'original_id',
+        ignoreDuplicates: false
+      })
+      .select();
+
+    if (error) {
+      console.error("Supabase error:", error.message);
+      throw error;
+    }
+
+    console.log(`✅ Inserted batch: ${data?.length || 0} records`);
+    return data?.length || 0;
+    
   } catch (err) {
-    console.error("❌ Import failed:", err);
+    console.error("❌ insertBatch error:", err.message);
     throw err;
   }
 };
 
-// API rute
+// API RUTE
+
+// PUNI IMPORT
 router.get('/nuforc', cronGuard, async (req, res) => {
   try {
-    await importNuforcData();
-    res.json({ success: true, message: "NUFORC import started" });
+    console.log("🚀 Full NUFORC import triggered");
+    
+    importNuforcData(false)
+      .then(result => console.log("Import finished:", result))
+      .catch(err => console.error("Import failed:", err));
+
+    res.json({ 
+      success: true, 
+      message: "NUFORC full import started in background"
+    });
+    
   } catch (err) {
     res.status(500).json({ 
       success: false, 
       error: err.message 
+    });
+  }
+});
+
+// TEST IMPORT
+router.get('/nuforc-test', async (req, res) => {
+  try {
+    console.log("🧪 Test NUFORC import triggered");
+    
+    const result = await importNuforcData(true);
+    
+    res.json({ 
+      success: true, 
+      message: "NUFORC test import completed",
+      result: result
+    });
+    
+  } catch (err) {
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
+});
+
+// STATUS CHECK
+router.get('/status', async (req, res) => {
+  try {
+    const { count, error } = await supabase
+      .from('reports')
+      .select('*', { count: 'exact', head: true });
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      total_reports: count,
+      database: "connected"
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 });
