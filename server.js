@@ -28,6 +28,25 @@ console.log("CRON_TOKEN:", process.env.CRON_TOKEN ? "✅ Set" : "❌ Missing");
 console.log("NODE_ENV:", process.env.NODE_ENV || "development");
 console.log("🧩 ENV CHECK END");
 
+// Helper funkcije za datum
+const isValidDate = (dateString) => {
+  const date = new Date(dateString);
+  return date instanceof Date && !isNaN(date) && date.toISOString() !== null;
+};
+
+const formatDate = (dateString) => {
+  if (!dateString) return null;
+  try {
+    // Pokušaj parsirati datum
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) return null;
+    return date.toISOString();
+  } catch (e) {
+    console.error("Date parsing error:", e);
+    return null;
+  }
+};
+
 // ---- Health check endpoint ----
 app.get("/health", (req, res) => res.json({ 
   status: "healthy",
@@ -53,11 +72,11 @@ app.get("/api/reports", async (req, res) => {
       .select("*", { count: "exact" });
 
     // Primjeni filtere ako postoje
-    if (start_date) {
-      query = query.gte('date_event', start_date);
+    if (start_date && isValidDate(start_date)) {
+      query = query.gte('date_event', formatDate(start_date));
     }
-    if (end_date) {
-      query = query.lte('date_event', end_date);
+    if (end_date && isValidDate(end_date)) {
+      query = query.lte('date_event', formatDate(end_date));
     }
     if (search) {
       query = query.textSearch('description_search', search);
@@ -81,7 +100,10 @@ app.get("/api/reports", async (req, res) => {
     res.json({
       success: true,
       count,
-      data
+      data: data.map(item => ({
+        ...item,
+        date_event: formatDate(item.date_event) || formatDate(item.date) || null
+      }))
     });
   } catch (err) {
     console.error("GET /api/reports error:", err);
@@ -119,11 +141,11 @@ app.get("/api/reports/nearby", async (req, res) => {
     });
 
     // Dodatni filteri
-    if (start_date) {
-      query = query.gte('date_event', start_date);
+    if (start_date && isValidDate(start_date)) {
+      query = query.gte('date_event', formatDate(start_date));
     }
-    if (end_date) {
-      query = query.lte('date_event', end_date);
+    if (end_date && isValidDate(end_date)) {
+      query = query.lte('date_event', formatDate(end_date));
     }
     if (search) {
       query = query.textSearch('description_search', search);
@@ -139,7 +161,10 @@ app.get("/api/reports/nearby", async (req, res) => {
     res.json({
       success: true,
       count: data.length,
-      data
+      data: data.map(item => ({
+        ...item,
+        date_event: formatDate(item.date_event) || formatDate(item.date) || null
+      }))
     });
   } catch (err) {
     console.error('Error in nearby search:', err);
@@ -185,6 +210,8 @@ app.post("/api/reports", async (req, res) => {
       });
     }
 
+    const formattedDate = formatDate(date_event) || new Date().toISOString();
+
     const payload = {
       description,
       lat: latitude ?? null,
@@ -192,7 +219,7 @@ app.post("/api/reports", async (req, res) => {
       address: location ?? null,
       media_url: media_url ?? null,
       thumbnail_url: thumbnail_url ?? null,
-      date_event: date_event ? new Date(date_event).toISOString() : new Date().toISOString(),
+      date_event: formattedDate,
       source_name: "USER",
       source_type: "USER",
       shape: shape?.toLowerCase() ?? null,
@@ -241,7 +268,10 @@ app.get("/api/reports/:id", async (req, res) => {
 
     res.json({
       success: true,
-      data
+      data: {
+        ...data,
+        date_event: formatDate(data.date_event) || formatDate(data.date) || null
+      }
     });
   } catch (err) {
     console.error(`GET /api/reports/${req.params.id} error:`, err);
@@ -255,21 +285,25 @@ app.get("/api/reports/:id", async (req, res) => {
 // ---- Reports: Stats ----
 app.get("/api/reports/stats/summary", async (req, res) => {
   try {
-    const { data: shapes, error: shapesError } = await supabase
+    // Osnovni brojač
+    const { count: total } = await supabase
+      .from('reports')
+      .select('*', { count: 'exact' });
+
+    // Zadnjih 30 dana
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const { count: recent } = await supabase
+      .from('reports')
+      .select('*', { count: 'exact' })
+      .gte('date_event', thirtyDaysAgo.toISOString());
+
+    // Brojanje po oblicima
+    const { data: shapes } = await supabase
       .from('reports')
       .select('shape')
       .not('shape', 'is', null);
-
-    const { data: total, error: totalError } = await supabase
-      .from('reports')
-      .select('id', { count: 'exact' });
-
-    const { data: recent, error: recentError } = await supabase
-      .from('reports')
-      .select('id', { count: 'exact' })
-      .gte('date_event', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
-
-    if (shapesError || totalError || recentError) throw error;
 
     // Grupiranje po oblicima
     const shapeStats = shapes.reduce((acc, curr) => {
@@ -282,13 +316,104 @@ app.get("/api/reports/stats/summary", async (req, res) => {
     res.json({
       success: true,
       data: {
-        total: total.length,
-        recent: recent.length,
+        total,
+        recent: recent || 0,
         shapes: shapeStats
       }
     });
   } catch (err) {
     console.error("GET /api/reports/stats/summary error:", err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// ---- Reports: Detailed Stats ----
+app.get("/api/reports/stats/detailed", async (req, res) => {
+  try {
+    // Osnovni podaci
+    const { count: total } = await supabase
+      .from('reports')
+      .select('*', { count: 'exact' });
+
+    // Statistika po datumima (samo valjani datumi)
+    const { data: dateStats } = await supabase
+      .from('reports')
+      .select('date_event')
+      .not('date_event', 'is', null)
+      .gte('date_event', '1900-01-01')
+      .lte('date_event', '2100-01-01');
+
+    // Grupiranje po vremenskim periodima
+    const timeStats = dateStats.reduce((acc, curr) => {
+      try {
+        if (!curr.date_event) return acc;
+        
+        const date = new Date(curr.date_event);
+        if (isNaN(date.getTime())) return acc;
+        
+        const hour = date.getUTCHours();
+        const period = 
+          hour >= 5 && hour < 12 ? 'morning' :
+          hour >= 12 && hour < 17 ? 'afternoon' :
+          hour >= 17 && hour < 21 ? 'evening' : 'night';
+        
+        acc[period] = (acc[period] || 0) + 1;
+      } catch (e) {
+        console.error('Error processing date:', curr.date_event);
+      }
+      return acc;
+    }, {});
+
+    // Statistika po oblicima
+    const { data: shapeStats } = await supabase
+      .from('reports')
+      .select('shape')
+      .not('shape', 'is', null);
+
+    const shapes = shapeStats.reduce((acc, curr) => {
+      if (curr.shape) {
+        acc[curr.shape] = (acc[curr.shape] || 0) + 1;
+      }
+      return acc;
+    }, {});
+
+    // Brojanje lokacija i medija
+    const { count: withLocation } = await supabase
+      .from('reports')
+      .select('*', { count: 'exact' })
+      .not('lat', 'is', null)
+      .not('lon', 'is', null);
+
+    const { count: withMedia } = await supabase
+      .from('reports')
+      .select('*', { count: 'exact' })
+      .not('media_url', 'is', null);
+
+    // Zadnjih 30 dana
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const { count: recent } = await supabase
+      .from('reports')
+      .select('*', { count: 'exact' })
+      .gte('date_event', thirtyDaysAgo.toISOString());
+
+    res.json({
+      success: true,
+      data: {
+        total,
+        recent: recent || 0,
+        shapes,
+        timeDistribution: timeStats,
+        withLocation: withLocation || 0,
+        withMedia: withMedia || 0
+      }
+    });
+  } catch (err) {
+    console.error("GET /api/reports/stats/detailed error:", err);
     res.status(500).json({
       success: false,
       error: err.message
