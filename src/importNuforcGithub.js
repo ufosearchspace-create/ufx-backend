@@ -90,6 +90,17 @@ const importNuforcData = async (testMode = false) => {
 
       parser.on('data', (record) => {
         try {
+          // 🔍 DEBUG LOG
+          if (processedCount === 0) {
+            console.log("🔍 DEBUG - First record received!");
+            console.log("🔍 DEBUG - Record keys:", Object.keys(record).slice(0, 5));
+            console.log("🔍 DEBUG - Sample values:", {
+              city: record['Location.City'],
+              state: record['Location.State'],
+              shape: record['Data.Shape']
+            });
+          }
+
           if (testMode && processedCount >= CONFIG.TEST_LIMIT) {
             parser.pause();
             parser.destroy();
@@ -191,6 +202,7 @@ const importNuforcData = async (testMode = false) => {
       });
 
       response.body.pipe(parser);
+      console.log("🔍 DEBUG - Stream piped to parser");
 
     } catch (err) {
       console.error("❌ Import failed:", err);
