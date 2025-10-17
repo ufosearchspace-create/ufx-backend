@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 import nuforcGithubRouter from "./src/importNuforcGithub.js";
 import camerasRouter from "./src/cameras.js";
 import aiVerifyRouter from "./src/aiVerify.js";
+import sightingsRouter from "./src/routes/reports.js";
 import { supabase } from "./src/supabase.js";
 import { isValidLat, isValidLon, adminGuard, cronGuard } from "./src/util.js";
 
@@ -429,6 +430,9 @@ app.use("/api/cameras", camerasRouter);
 
 // ---- AI verification routes ----
 app.use("/api", aiVerifyRouter);
+
+// ---- Sightings routes ----
+app.use("/api/sightings", sightingsRouter);
 
 // ---- Error handling middleware ----
 app.use((err, req, res, next) => {
