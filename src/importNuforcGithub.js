@@ -90,17 +90,6 @@ const importNuforcData = async (testMode = false) => {
 
       parser.on('data', (record) => {
         try {
-          // 🔍 DEBUG LOG
-          if (processedCount === 0) {
-            console.log("🔍 DEBUG - First record received!");
-            console.log("🔍 DEBUG - Record keys:", Object.keys(record).slice(0, 5));
-            console.log("🔍 DEBUG - Sample values:", {
-              city: record['Location.City'],
-              state: record['Location.State'],
-              shape: record['Data.Shape']
-            });
-          }
-
           if (testMode && processedCount >= CONFIG.TEST_LIMIT) {
             parser.pause();
             parser.destroy();
@@ -135,19 +124,21 @@ const importNuforcData = async (testMode = false) => {
             verified_by_ai: false
           };
 
-          if (cleanRecord.description && cleanRecord.date_event) {
+          if (cleanRecord.date_event) {
             records.push(cleanRecord);
-          } else {
-            // 🔍 DEBUG - zašto zapis nije prošao validaciju
             if (processedCount < 3) {
-              console.log("🔍 DEBUG - Record REJECTED:", {
-                hasDescription: !!cleanRecord.description,
-                hasDate: !!cleanRecord.date_event,
-                description: cleanRecord.description?.substring(0, 50),
-                date_event: cleanRecord.date_event,
-                rawYear: record['Dates.Sighted.Year'],
-                rawMonth: record['Dates.Sighted.Month'],
-                rawDay: record['Date.Sighted.Day']
+              console.log("✅ Record ACCEPTED:", {
+                city: cleanRecord.city,
+                date: cleanRecord.date_event,
+                shape: cleanRecord.shape
+              });
+            }
+          } else {
+            if (processedCount < 3) {
+              console.log("❌ Record REJECTED - no date:", {
+                year: record['Dates.Sighted.Year'],
+                month: record['Dates.Sighted.Month'],
+                day: record['Date.Sighted.Day']
               });
             }
           }
