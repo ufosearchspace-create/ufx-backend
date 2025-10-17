@@ -91,8 +91,14 @@ const importNuforcData = async (testMode = false) => {
       parser.on('data', (record) => {
         try {
           if (testMode && processedCount >= CONFIG.TEST_LIMIT) {
+            console.log("🧪 Test limit reached, forcing end...");
             parser.pause();
-            parser.destroy();
+            
+            // Ručno triggeruj 'end' event
+            setImmediate(() => {
+              parser.emit('end');
+            });
+            
             return;
           }
 
@@ -131,14 +137,6 @@ const importNuforcData = async (testMode = false) => {
                 city: cleanRecord.city,
                 date: cleanRecord.date_event,
                 shape: cleanRecord.shape
-              });
-            }
-          } else {
-            if (processedCount < 3) {
-              console.log("❌ Record REJECTED - no date:", {
-                year: record['Dates.Sighted.Year'],
-                month: record['Dates.Sighted.Month'],
-                day: record['Date.Sighted.Day']
               });
             }
           }
