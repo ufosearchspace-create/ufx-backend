@@ -88,96 +88,90 @@ const importNuforcData = async (testMode = false) => {
         relax_column_count: true
       });
 
-    parser.on('data', (record) => {
-  try {
-    // 🔍 DEBUG LOG
-    if (processedCount === 0) {
-      console.log("🔍 DEBUG - First record received!");
-      console.log("🔍 DEBUG - Record keys:", Object.keys(record).slice(0, 5));
-      console.log("🔍 DEBUG - Sample values:", {
-        city: record['Location.City'],
-        state: record['Location.State'],
-        shape: record['Data.Shape']
-      });
-    }
+      parser.on('data', (record) => {
+        try {
+          // 🔍 DEBUG LOG
+          if (processedCount === 0) {
+            console.log("🔍 DEBUG - First record received!");
+            console.log("🔍 DEBUG - Record keys:", Object.keys(record).slice(0, 5));
+            console.log("🔍 DEBUG - Sample values:", {
+              city: record['Location.City'],
+              state: record['Location.State'],
+              shape: record['Data.Shape']
+            });
+          }
 
-    if (testMode && processedCount >= CONFIG.TEST_LIMIT) {
-      parser.pause();
-      parser.destroy();
-      return;
-    }
+          if (testMode && processedCount >= CONFIG.TEST_LIMIT) {
+            parser.pause();
+            parser.destroy();
+            return;
+          }
 
-    // CORGIS dataset ima nested field names sa tačkama
-    const city = cleanText(record['Location.City']);
-    const state = cleanText(record['Location.State']);
-    const country = cleanText(record['Location.Country']) || 'USA';
-    
-    const cleanRecord = {
-      date_event: buildDate(
-        record['Dates.Sighted.Year'],
-        record['Dates.Sighted.Month'],
-        record['Date.Sighted.Day'],
-        record['Dates.Sighted.Hour'],
-        record['Dates.Sighted.Minute']
-      ),
-      city: city,
-      state: state,
-      country: country,
-      address: buildAddress(city, state, country),
-      shape: cleanText(record['Data.Shape'])?.toLowerCase(),
-      duration: cleanText(record['Data.Encounter duration']),
-      description: cleanText(record['Data.Description excerpt']),
-      lat: parseCoordinate(record['Location.Coordinates.Latitude ']),
-      lon: parseCoordinate(record['Location.Coordinates.Longitude ']),
-      source_name: "NUFORC",
-      source_type: "HISTORICAL",
-      original_id: `corgis_${processedCount}`,
-      verified_by_ai: false
-    };
+          // CORGIS dataset ima nested field names sa tačkama
+          const city = cleanText(record['Location.City']);
+          const state = cleanText(record['Location.State']);
+          const country = cleanText(record['Location.Country']) || 'USA';
+          
+          const cleanRecord = {
+            date_event: buildDate(
+              record['Dates.Sighted.Year'],
+              record['Dates.Sighted.Month'],
+              record['Date.Sighted.Day'],
+              record['Dates.Sighted.Hour'],
+              record['Dates.Sighted.Minute']
+            ),
+            city: city,
+            state: state,
+            country: country,
+            address: buildAddress(city, state, country),
+            shape: cleanText(record['Data.Shape'])?.toLowerCase(),
+            duration: cleanText(record['Data.Encounter duration']),
+            description: cleanText(record['Data.Description excerpt']),
+            lat: parseCoordinate(record['Location.Coordinates.Latitude ']),
+            lon: parseCoordinate(record['Location.Coordinates.Longitude ']),
+            source_name: "NUFORC",
+            source_type: "HISTORICAL",
+            original_id: `corgis_${processedCount}`,
+            verified_by_ai: false
+          };
 
-    if (cleanRecord.description && cleanRecord.date_event) {
-      records.push(cleanRecord);
-    } else {
-      // 🔍 DEBUG - zašto zapis nije prošao validaciju
-      if (processedCount < 3) {
-        console.log("🔍 DEBUG - Record REJECTED:", {
-          hasDescription: !!cleanRecord.description,
-          hasDate: !!cleanRecord.date_event,
-          description: cleanRecord.description?.substring(0, 50),
-          date_event: cleanRecord.date_event,
-          rawYear: record['Dates.Sighted.Year'],
-          rawMonth: record['Dates.Sighted.Month'],
-          rawDay: record['Date.Sighted.Day']
-        });
-      }
-    }
+          if (cleanRecord.description && cleanRecord.date_event) {
+            records.push(cleanRecord);
+          } else {
+            // 🔍 DEBUG - zašto zapis nije prošao validaciju
+            if (processedCount < 3) {
+              console.log("🔍 DEBUG - Record REJECTED:", {
+                hasDescription: !!cleanRecord.description,
+                hasDate: !!cleanRecord.date_event,
+                description: cleanRecord.description?.substring(0, 50),
+                date_event: cleanRecord.date_event,
+                rawYear: record['Dates.Sighted.Year'],
+                rawMonth: record['Dates.Sighted.Month'],
+                rawDay: record['Date.Sighted.Day']
+              });
+            }
+          }
 
-    processedCount++;
+          processedCount++;
 
-    if (processedCount % 1000 === 0) {
-      console.log(`📊 Progress: ${processedCount} records processed...`);
-    }
+          if (processedCount % 1000 === 0) {
+            console.log(`📊 Progress: ${processedCount} records processed...`);
+          }
 
-  } catch (err) {
-    errorCount++;
-    console.error("❌ Error processing record:", err.message);
-  }
+        } catch (err) {
+          errorCount++;
+          console.error("❌ Error processing record:", err.message);
+        }
 
-  if (records.length >= CONFIG.BATCH_SIZE) {
-    parser.pause();
-    
-    insertBatch(records)
-      .then((count) => {
-        insertedCount += count;
-        records = [];
-        parser.resume();
-      })
-      .catch((err) => {
-        console.error("❌ Batch insert error:", err.message);
-        parser.resume();
-      });
-  }
-});
+        if (records.length >= CONFIG.BATCH_SIZE) {
+          parser.pause();
+          
+          insertBatch(records)
+            .then((count) => {
+              insertedCount += count;
+              records = [];
+              parser.resume();
+            })
             .catch((err) => {
               console.error("❌ Batch insert error:", err.message);
               parser.resume();
