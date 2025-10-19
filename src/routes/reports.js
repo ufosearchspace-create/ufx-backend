@@ -90,9 +90,6 @@ router.get('/map', async (req, res) => {
       limit
     } = req.query;
 
-    // Default limit: 60000, ali korisnik može specificirati manji
-    const maxLimit = limit ? parseInt(limit) : 60000;
-
     let query = supabase
       .from('reports')
       .select('id, lat, lon, city, state, country, shape, date_event')
@@ -145,7 +142,8 @@ router.get('/map', async (req, res) => {
       query = query.lte('date_event', `${year_to}-12-31T23:59:59`);
     }
 
-      query = query.limit(maxLimit);
+    // ✅ FIX: Koristi .range() umjesto .limit() da izbegneš Supabase default limit od 1000
+    query = query.range(0, 60000);
 
     const { data, error } = await query;
 
