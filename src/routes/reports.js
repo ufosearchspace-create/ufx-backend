@@ -71,12 +71,12 @@ router.get('/', async (req, res) => {
 });
 
 // ====================================
-// GET /api/sightings/map - Optimizovano za mapu
+// GET /api/sightings/map - Optimizovano za mapu (SA PAGINATION LOOP-OM)
 // ====================================
 router.get('/map', async (req, res) => {
   try {
     const {
-      bounds, // format: "minLat,minLon,maxLat,maxLon"
+      bounds,
       shape,
       date_from,
       date_to,
@@ -84,75 +84,102 @@ router.get('/map', async (req, res) => {
       year_to,
       country,
       state,
-      city,
-      duration_min,
-      duration_max,
-      limit
+      city
     } = req.query;
 
-    let query = supabase
-      .from('reports')
-      .select('id, lat, lon, city, state, country, shape, date_event')
-      .not('lat', 'is', null)
-      .not('lon', 'is', null);
+    let allData = [];
+    let from = 0;
+    const chunkSize = 1000;
+    let hasMore = true;
 
-    // Bounds filter (za map viewport)
-    if (bounds) {
-      const [minLat, minLon, maxLat, maxLon] = bounds.split(',').map(parseFloat);
-      query = query
-        .gte('lat', minLat)
-        .lte('lat', maxLat)
-        .gte('lon', minLon)
-        .lte('lon', maxLon);
+    console.log('🔄 Starting pagination fetch...');
+
+    while (hasMore) {
+      let query = supabase
+        .from('reports')
+        .select('id, lat, lon, city, state, country, shape, date_event')
+        .not('lat', 'is', null)
+        .not('lon', 'is', null);
+
+      // Bounds filter
+      if (bounds) {
+        const [minLat, minLon, maxLat, maxLon] = bounds.split(',').map(parseFloat);
+        query = query
+          .gte('lat', minLat)
+          .lte('lat', maxLat)
+          .gte('lon', minLon)
+          .lte('lon', maxLon);
+      }
+
+      // Shape filter
+      if (shape) {
+        query = query.eq('shape', shape.toLowerCase());
+      }
+
+      // Country filter
+      if (country) {
+        query = query.ilike('country', `%${country}%`);
+      }
+
+      // State filter
+      if (state) {
+        query = query.ilike('state', `%${state}%`);
+      }
+
+      // City filter
+      if (city) {
+        query = query.ilike('city', `%${city}%`);
+      }
+
+      // Date range filters
+      if (date_from) {
+        query = query.gte('date_event', date_from);
+      }
+      if (date_to) {
+        query = query.lte('date_event', date_to);
+      }
+
+      // Year range filters
+      if (year_from) {
+        query = query.gte('date_event', `${year_from}-01-01T00:00:00`);
+      }
+      if (year_to) {
+        query = query.lte('date_event', `${year_to}-12-31T23:59:59`);
+      }
+
+      // Fetch chunk
+      query = query.range(from, from + chunkSize - 1);
+      
+      const { data, error } = await query;
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        allData = allData.concat(data);
+        from += chunkSize;
+        
+        console.log(`📦 Fetched chunk: ${data.length} records. Total so far: ${allData.length}`);
+        
+        // Ako je vratio manje od chunkSize, znači da nema više
+        if (data.length < chunkSize) {
+          hasMore = false;
+        }
+
+        // Safety limit - max 60k zapisa
+        if (allData.length >= 60000) {
+          hasMore = false;
+        }
+      } else {
+        hasMore = false;
+      }
     }
 
-    // Shape filter
-    if (shape) {
-      query = query.eq('shape', shape.toLowerCase());
-    }
-
-    // Country filter
-    if (country) {
-      query = query.ilike('country', `%${country}%`);
-    }
-
-    // State filter
-    if (state) {
-      query = query.ilike('state', `%${state}%`);
-    }
-
-    // City filter
-    if (city) {
-      query = query.ilike('city', `%${city}%`);
-    }
-
-    // Date range filters
-    if (date_from) {
-      query = query.gte('date_event', date_from);
-    }
-    if (date_to) {
-      query = query.lte('date_event', date_to);
-    }
-
-    // Year range filters (convert to date strings)
-    if (year_from) {
-      query = query.gte('date_event', `${year_from}-01-01T00:00:00`);
-    }
-    if (year_to) {
-      query = query.lte('date_event', `${year_to}-12-31T23:59:59`);
-    }
-
-    // ✅ FIX: Koristi .range() umjesto .limit() da izbegneš Supabase default limit od 1000
-    query = query.range(0, 60000);
-
-    const { data, error } = await query;
-
-    if (error) throw error;
+    console.log(`✅ Pagination complete! Total fetched: ${allData.length} sightings`);
 
     res.json({
       success: true,
-      count: data.length,
-      data: data
+      count: allData.length,
+      data: allData
     });
 
   } catch (err) {
