@@ -80,12 +80,22 @@ router.get('/map', async (req, res) => {
       shape,
       date_from,
       date_to,
-      limit = 5000
+      year_from,
+      year_to,
+      country,
+      state,
+      city,
+      duration_min,
+      duration_max,
+      limit
     } = req.query;
+
+    // Default limit: 60000, ali korisnik može specificirati manji
+    const maxLimit = limit ? parseInt(limit) : 60000;
 
     let query = supabase
       .from('reports')
-      .select('id, lat, lon, city, state, shape, date_event')
+      .select('id, lat, lon, city, state, country, shape, date_event, duration_seconds')
       .not('lat', 'is', null)
       .not('lon', 'is', null);
 
@@ -99,10 +109,27 @@ router.get('/map', async (req, res) => {
         .lte('lon', maxLon);
     }
 
-    // Ostali filteri
+    // Shape filter
     if (shape) {
       query = query.eq('shape', shape.toLowerCase());
     }
+
+    // Country filter
+    if (country) {
+      query = query.ilike('country', `%${country}%`);
+    }
+
+    // State filter
+    if (state) {
+      query = query.ilike('state', `%${state}%`);
+    }
+
+    // City filter
+    if (city) {
+      query = query.ilike('city', `%${city}%`);
+    }
+
+    // Date range filters
     if (date_from) {
       query = query.gte('date_event', date_from);
     }
@@ -110,7 +137,23 @@ router.get('/map', async (req, res) => {
       query = query.lte('date_event', date_to);
     }
 
-    query = query.limit(parseInt(limit));
+    // Year range filters (convert to date strings)
+    if (year_from) {
+      query = query.gte('date_event', `${year_from}-01-01T00:00:00`);
+    }
+    if (year_to) {
+      query = query.lte('date_event', `${year_to}-12-31T23:59:59`);
+    }
+
+    // Duration filters
+    if (duration_min) {
+      query = query.gte('duration_seconds', parseFloat(duration_min));
+    }
+    if (duration_max) {
+      query = query.lte('duration_seconds', parseFloat(duration_max));
+    }
+
+    query = query.limit(maxLimit);
 
     const { data, error } = await query;
 
