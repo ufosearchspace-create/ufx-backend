@@ -95,7 +95,7 @@ router.get('/map', async (req, res) => {
 
     let query = supabase
       .from('reports')
-      .select('id, lat, lon, city, state, country, shape, date_event, duration_seconds')
+      .select('id, lat, lon, city, state, country, shape, date_event')
       .not('lat', 'is', null)
       .not('lon', 'is', null);
 
@@ -145,15 +145,7 @@ router.get('/map', async (req, res) => {
       query = query.lte('date_event', `${year_to}-12-31T23:59:59`);
     }
 
-    // Duration filters
-    if (duration_min) {
-      query = query.gte('duration_seconds', parseFloat(duration_min));
-    }
-    if (duration_max) {
-      query = query.lte('duration_seconds', parseFloat(duration_max));
-    }
-
-    query = query.limit(maxLimit);
+      query = query.limit(maxLimit);
 
     const { data, error } = await query;
 
