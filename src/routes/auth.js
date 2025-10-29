@@ -55,6 +55,7 @@ async function checkWhitelist(address) {
 
 /**
  * Check token balance on-chain
+ * @param {string} address - Ethereum address (any valid format - ethers.js normalizes internally)
  */
 async function checkTokenBalance(address) {
   try {
@@ -65,7 +66,7 @@ async function checkTokenBalance(address) {
     const provider = new ethers.JsonRpcProvider(BASE_RPC_URL);
     const contract = new ethers.Contract(TOKEN_CONTRACT_ADDRESS, ERC20_ABI, provider);
 
-    // Get balance and decimals
+    // Get balance and decimals (ethers.js handles address format normalization)
     const [balance, decimals] = await Promise.all([
       contract.balanceOf(address),
       contract.decimals()
