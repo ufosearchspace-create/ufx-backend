@@ -434,6 +434,8 @@ app.use("/api", aiVerifyRouter);
 // ---- Sightings routes ----
 app.use("/api/sightings", sightingsRouter);
 
+app.use('/api/auth', authRouter);
+
 // ---- Error handling middleware ----
 app.use((err, req, res, next) => {
   console.error(err.stack);
