@@ -85,6 +85,52 @@ async function checkTokenBalance(address) {
 }
 
 /**
+ * Shared logic to check access for an address
+ */
+async function checkAccess(address) {
+  // Validate Ethereum address format
+  if (!ethers.isAddress(address)) {
+    throw new Error('Invalid Ethereum address format');
+  }
+
+  const normalizedAddress = address.toLowerCase();
+
+  // Check whitelist (server-side with service role key)
+  const whitelistResult = await checkWhitelist(normalizedAddress);
+
+  // If TOKEN_CONTRACT_ADDRESS is configured, also check on-chain balance
+  let tokenResult = null;
+  if (TOKEN_CONTRACT_ADDRESS) {
+    tokenResult = await checkTokenBalance(normalizedAddress);
+  }
+
+  // Determine overall access
+  let allowed = whitelistResult.allowed;
+  let reason = whitelistResult.reason;
+  let balance = tokenResult?.balance;
+
+  // If token check is configured and successful, grant access if EITHER condition is met
+  if (tokenResult && tokenResult.balance !== undefined) {
+    if (tokenResult.meetsMinimum) {
+      allowed = true;
+      reason = `Token balance ${tokenResult.balance} meets minimum ${MIN_TOKEN_AMOUNT}`;
+    } else if (!whitelistResult.allowed) {
+      // Only deny if both checks fail
+      allowed = false;
+      reason = `Token balance ${tokenResult.balance} below minimum ${MIN_TOKEN_AMOUNT} and not whitelisted`;
+    }
+    // If whitelisted but token balance is low, keep whitelist access
+  }
+
+  return {
+    success: true,
+    allowed,
+    reason,
+    ...(balance !== undefined && { balance })
+  };
+}
+
+/**
  * POST /api/auth/check-access
  * Check if an address has access (whitelist + optional token balance)
  */
@@ -99,50 +145,14 @@ router.post('/check-access', async (req, res) => {
       });
     }
 
-    // Validate Ethereum address format
-    if (!ethers.isAddress(address)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid Ethereum address format'
-      });
-    }
-
-    const normalizedAddress = address.toLowerCase();
-
-    // Check whitelist (server-side with service role key)
-    const whitelistResult = await checkWhitelist(normalizedAddress);
-
-    // If TOKEN_CONTRACT_ADDRESS is configured, also check on-chain balance
-    let tokenResult = null;
-    if (TOKEN_CONTRACT_ADDRESS) {
-      tokenResult = await checkTokenBalance(address);
-    }
-
-    // Determine overall access
-    let allowed = whitelistResult.allowed;
-    let reason = whitelistResult.reason;
-    let balance = tokenResult?.balance;
-
-    // If token check is configured and successful, use it to determine access
-    if (tokenResult && tokenResult.balance !== undefined) {
-      allowed = tokenResult.meetsMinimum;
-      reason = tokenResult.meetsMinimum 
-        ? `Token balance ${tokenResult.balance} meets minimum ${MIN_TOKEN_AMOUNT}`
-        : `Token balance ${tokenResult.balance} below minimum ${MIN_TOKEN_AMOUNT}`;
-    }
-
-    res.json({
-      success: true,
-      allowed,
-      reason,
-      ...(balance !== undefined && { balance })
-    });
+    const result = await checkAccess(address);
+    res.json(result);
 
   } catch (error) {
     console.error('POST /api/auth/check-access error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to check access',
+      error: error.message === 'Invalid Ethereum address format' ? error.message : 'Failed to check access',
       message: error.message
     });
   }
@@ -163,50 +173,14 @@ router.get('/check-access', async (req, res) => {
       });
     }
 
-    // Validate Ethereum address format
-    if (!ethers.isAddress(address)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid Ethereum address format'
-      });
-    }
-
-    const normalizedAddress = address.toLowerCase();
-
-    // Check whitelist (server-side with service role key)
-    const whitelistResult = await checkWhitelist(normalizedAddress);
-
-    // If TOKEN_CONTRACT_ADDRESS is configured, also check on-chain balance
-    let tokenResult = null;
-    if (TOKEN_CONTRACT_ADDRESS) {
-      tokenResult = await checkTokenBalance(address);
-    }
-
-    // Determine overall access
-    let allowed = whitelistResult.allowed;
-    let reason = whitelistResult.reason;
-    let balance = tokenResult?.balance;
-
-    // If token check is configured and successful, use it to determine access
-    if (tokenResult && tokenResult.balance !== undefined) {
-      allowed = tokenResult.meetsMinimum;
-      reason = tokenResult.meetsMinimum 
-        ? `Token balance ${tokenResult.balance} meets minimum ${MIN_TOKEN_AMOUNT}`
-        : `Token balance ${tokenResult.balance} below minimum ${MIN_TOKEN_AMOUNT}`;
-    }
-
-    res.json({
-      success: true,
-      allowed,
-      reason,
-      ...(balance !== undefined && { balance })
-    });
+    const result = await checkAccess(address);
+    res.json(result);
 
   } catch (error) {
     console.error('GET /api/auth/check-access error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to check access',
+      error: error.message === 'Invalid Ethereum address format' ? error.message : 'Failed to check access',
       message: error.message
     });
   }
