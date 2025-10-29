@@ -53,8 +53,9 @@ async function checkAccess(req, res) {
       .single();
 
     if (error) {
-      // If no record found, user is not whitelisted
-      if (error.code === 'PGRST116') {
+      // If no record found (Supabase PostgREST error code PGRST116), user is not whitelisted
+      // This error code indicates "JSON object requested, but multiple (or no) rows returned"
+      if (error.code === 'PGRST116' || error.message?.includes('JSON object requested')) {
         return res.json({
           success: true,
           allowed: false,
@@ -65,7 +66,9 @@ async function checkAccess(req, res) {
     }
 
     // Check if the flag is true/active
-    const isActive = data?.[WHITELIST_FLAG_COL] === true || data?.[WHITELIST_FLAG_COL] === 'true';
+    // Handle boolean, string "true", or number 1 as truthy values
+    const flagValue = data?.[WHITELIST_FLAG_COL];
+    const isActive = flagValue === true || flagValue === 'true' || flagValue === 1;
 
     res.json({
       success: true,
