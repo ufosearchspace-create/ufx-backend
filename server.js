@@ -3,7 +3,7 @@ import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
 import dotenv from 'dotenv';
-
+import authRouter from './src/routes/auth.js';
 import nuforcGithubRouter from "./src/importNuforcGithub.js";
 import camerasRouter from "./src/cameras.js";
 import aiVerifyRouter from "./src/aiVerify.js";
