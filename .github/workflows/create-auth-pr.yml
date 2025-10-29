@@ -1,18 +1,11 @@
-# Workflow: create-auth-pr.yml
-# Run manually (workflow_dispatch). It will:
-# - checkout main
-# - create branch feature/auth-gate
-# - create src/routes/auth.js with the provided content
-# - prepend import of authRouter to server.js and insert app.use('/api/auth', authRouter)
-# - add ethers to package.json dependencies (via node)
-# - commit, push and open a PR using peter-evans/create-pull-request
+# Create auth-gate PR (manual run)
 name: Create auth-gate PR
 
 on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # needed to push branch and create PR
+  contents: write
   pull-requests: write
 
 jobs:
@@ -142,7 +135,6 @@ EOF
 
       - name: Inject import into server.js (prepend import line)
         run: |
-          # Prepend import line if not present
           if ! grep -q "import authRouter from './src/routes/auth.js';" server.js; then
             (echo "import authRouter from './src/routes/auth.js';"; cat server.js) > server.tmp && mv server.tmp server.js
           else
@@ -154,14 +146,13 @@ EOF
           if grep -q "app.use('/api/auth', authRouter);" server.js; then
             echo "auth route already registered"
           else
-            # Insert the app.use line before the error handler middleware (looks for 'app.use((err, req, res, next) => {')
             awk 'BEGIN{inserted=0}
               /app.use\(\(err, req, res, next\) =>/ && !inserted {
                 print "app.use(\\047/api/auth\\047, authRouter);"
                 inserted=1
               }
               {print}
-              END{ if(!inserted) { print "\\n// If error handler pattern not found, app.use(\\047/api/auth\\047, authRouter); was not auto-inserted. Please add it manually." } }' server.js > server.new && mv server.new server.js
+              END{ if(!inserted) { print "\\n// WARNING: error-handler pattern not found; please add app.use(\\047/api/auth\\047, authRouter); manually." } }' server.js > server.new && mv server.new server.js
           fi
 
       - name: Add ethers dependency to package.json
@@ -178,20 +169,24 @@ EOF
             console.log('ethers already present');
           }
           "
-      - name: Install (update) package-lock.json
-        run: |
-          npm ci --package-lock-only
+
+      - name: Update package-lock
+        run: npm ci --package-lock-only
+
       - name: Commit & push changes
         run: |
-          git add src/routes/auth.js server.js package.json package-lock.json || true
-          git commit -m "Add src/routes/auth.js (implement auth check endpoint)" -m "Register auth route in server.js" -m "Add ethers dependency to package.json" || true
-          git push --set-upstream origin feature/auth-gate
+          git add -A || true
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Add src/routes/auth.js (implement auth check endpoint)" -m "Register auth route in server.js" -m "Add ethers dependency to package.json"
+            git push --set-upstream origin feature/auth-gate
+          fi
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "Add server-side auth route for whitelist token gating"
           branch: feature/auth-gate
           base: main
           title: "Add server-side auth route for whitelist token gating"
