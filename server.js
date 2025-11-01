@@ -1,4 +1,5 @@
 // server.js
+import combinedRouter from './src/routes/combined.js';
 import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
@@ -21,6 +22,7 @@ const PORT = process.env.PORT || 10000;
 // Middleware
 app.use(cors());
 app.use(bodyParser.json({ limit: "10mb" }));
+app.use("/api/combined", combinedRouter);
 
 // ---- ENV logs (sanitizirano) ----
 console.log("🧩 ENV CHECK START");
