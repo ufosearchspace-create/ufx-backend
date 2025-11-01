@@ -5,58 +5,99 @@ import { supabase } from '../supabase.js';
 const router = express.Router();
 
 // Configuration
-const MAP_SAFETY_LIMIT = 200000; // Povećano za obe tabele
+const MAP_SAFETY_LIMIT = 200000;
 const MAP_CHUNK_SIZE = 1000;
 
+// TEST ENDPOINT
+router.get('/test', async (req, res) => {
+  try {
+    console.log('🧪 Testing table access...');
+    
+    // Test reports table
+    const { count: reportsCount, error: reportsError } = await supabase
+      .from('reports')
+      .select('*', { count: 'exact', head: true });
+    
+    console.log('Reports table:', reportsCount ? `✅ ${reportsCount} records` : `❌ Error: ${reportsError?.message}`);
+    
+    // Test nuforc_reports table  
+    const { count: nuforcCount, error: nuforcError } = await supabase
+      .from('nuforc_reports')
+      .select('*', { count: 'exact', head: true });
+    
+    console.log('NUFORC table:', nuforcCount ? `✅ ${nuforcCount} records` : `❌ Error: ${nuforcError?.message}`);
+    
+    // Get column info
+    const { data: sample, error: sampleError } = await supabase
+      .from('nuforc_reports')
+      .select('*')
+      .limit(1);
+    
+    let columns = [];
+    if (sample && sample[0]) {
+      columns = Object.keys(sample[0]);
+    }
+    
+    res.json({
+      success: true,
+      tables: {
+        reports: {
+          accessible: !reportsError,
+          count: reportsCount || 0,
+          error: reportsError?.message
+        },
+        nuforc_reports: {
+          accessible: !nuforcError,
+          count: nuforcCount || 0,
+          error: nuforcError?.message,
+          columns: columns,
+          sample: sample?.[0] || null
+        }
+      }
+    });
+  } catch (err) {
+    console.error('Test endpoint error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ====================================
-// GET /api/combined/map - Podatci iz OBE tabele
+// GET /api/combined/map
 // ====================================
 router.get('/map', async (req, res) => {
   try {
+    console.log('🔄 Combined/map endpoint called');
+    
     const {
-      bounds,
+      has_image,
+      has_description,
       shape,
-      date_from,
-      date_to,
-      year_from,
-      year_to,
       country,
       state,
       city,
-      has_image,
-      has_description
+      year_from,
+      year_to
     } = req.query;
 
-    console.log('🔄 Fetching data from BOTH tables...');
-
-    // Funkcija za kreiranje query-ja
-    const buildQuery = (tableName) => {
+    // FETCH FROM REPORTS TABLE
+    console.log('📊 Fetching from reports table...');
+    let reportsData = [];
+    let from = 0;
+    let hasMore = true;
+    
+    while (hasMore && reportsData.length < MAP_SAFETY_LIMIT / 2) {
       let query = supabase
-        .from(tableName)
-        .select('id, latitude, longitude, lat, lon, city, state, country, shape, date_event, datetime, image_url, description, summary')
-        .or('latitude.not.is.null,lat.not.is.null');
+        .from('reports')
+        .select('id, lat, lon, city, state, country, shape, date_event, image_url, description')
+        .not('lat', 'is', null)
+        .not('lon', 'is', null)
+        .range(from, from + MAP_CHUNK_SIZE - 1);
 
-      // Filteri
       if (has_image === 'true') {
         query = query.not('image_url', 'is', null);
       }
       if (has_description === 'true') {
-        query = query.or('description.not.is.null,summary.not.is.null');
-      }
-      if (bounds) {
-        const [minLat, minLon, maxLat, maxLon] = bounds.split(',').map(parseFloat);
-        // Za reports tabelu
-        if (tableName === 'reports') {
-          query = query
-            .gte('lat', minLat).lte('lat', maxLat)
-            .gte('lon', minLon).lte('lon', maxLon);
-        }
-        // Za nuforc_reports tabelu
-        else {
-          query = query
-            .gte('latitude', minLat).lte('latitude', maxLat)
-            .gte('longitude', minLon).lte('longitude', maxLon);
-        }
+        query = query.not('description', 'is', null);
       }
       if (shape) {
         query = query.eq('shape', shape.toLowerCase());
@@ -70,90 +111,97 @@ router.get('/map', async (req, res) => {
       if (city) {
         query = query.ilike('city', `%${city}%`);
       }
-      
-      // Date filters
-      if (date_from) {
-        query = query.gte(tableName === 'reports' ? 'date_event' : 'datetime', date_from);
-      }
-      if (date_to) {
-        query = query.lte(tableName === 'reports' ? 'date_event' : 'datetime', date_to);
-      }
       if (year_from) {
-        const dateField = tableName === 'reports' ? 'date_event' : 'datetime';
-        query = query.gte(dateField, `${year_from}-01-01`);
+        query = query.gte('date_event', `${year_from}-01-01`);
       }
       if (year_to) {
-        const dateField = tableName === 'reports' ? 'date_event' : 'datetime';
-        query = query.lte(dateField, `${year_to}-12-31`);
+        query = query.lte('date_event', `${year_to}-12-31`);
       }
 
-      return query;
-    };
+      const { data, error } = await query;
 
-    // Fetch iz OBE tabele sa pagination
-    const fetchAllFromTable = async (tableName) => {
-      let allData = [];
-      let from = 0;
-      let hasMore = true;
+      if (error) {
+        console.error('❌ Reports fetch error:', error);
+        throw error;
+      }
 
-      while (hasMore) {
-        const query = buildQuery(tableName).range(from, from + MAP_CHUNK_SIZE - 1);
+      if (data && data.length > 0) {
+        reportsData = reportsData.concat(data);
+        from += MAP_CHUNK_SIZE;
+        
+        if (data.length < MAP_CHUNK_SIZE) {
+          hasMore = false;
+        }
+      } else {
+        hasMore = false;
+      }
+    }
+    
+    console.log(`✅ Fetched ${reportsData.length} from reports`);
+
+    // FETCH FROM NUFORC_REPORTS TABLE
+    console.log('📊 Fetching from nuforc_reports table...');
+    let nuforcData = [];
+    from = 0;
+    hasMore = true;
+    
+    try {
+      while (hasMore && nuforcData.length < MAP_SAFETY_LIMIT / 2) {
+        let query = supabase
+          .from('nuforc_reports')
+          .select('*')  // Select all to see what columns we have
+          .limit(MAP_CHUNK_SIZE)
+          .range(from, from + MAP_CHUNK_SIZE - 1);
+
         const { data, error } = await query;
 
         if (error) {
-          console.error(`Error fetching from ${tableName}:`, error);
-          return [];
+          console.error('❌ NUFORC fetch error:', error.message, error.details);
+          break;
         }
 
         if (data && data.length > 0) {
-          allData = allData.concat(data);
+          // Log first record to see structure
+          if (from === 0) {
+            console.log('📋 NUFORC record structure:', Object.keys(data[0]));
+          }
+          
+          // Transform data - adjust field names based on actual structure
+          const transformed = data.map(n => ({
+            id: `nuforc_${n.id}`,
+            lat: n.latitude || n.lat,
+            lon: n.longitude || n.lon || n.lng,
+            city: n.city,
+            state: n.state,
+            country: n.country || 'USA',
+            shape: n.shape,
+            date_event: n.datetime || n.date_event || n.date,
+            description: n.summary || n.description || n.comments
+          })).filter(n => n.lat && n.lon); // Only records with coordinates
+          
+          nuforcData = nuforcData.concat(transformed);
           from += MAP_CHUNK_SIZE;
           
           if (data.length < MAP_CHUNK_SIZE) {
-            hasMore = false;
-          }
-          if (allData.length >= MAP_SAFETY_LIMIT / 2) {
             hasMore = false;
           }
         } else {
           hasMore = false;
         }
       }
+    } catch (e) {
+      console.error('⚠️ NUFORC error:', e.message);
+    }
+    
+    console.log(`✅ Fetched ${nuforcData.length} from nuforc_reports`);
 
-      console.log(`✅ Fetched ${allData.length} records from ${tableName}`);
-      return allData;
-    };
-
-    // Fetch iz obe tabele paralelno
-    const [reportsData, nuforcData] = await Promise.all([
-      fetchAllFromTable('reports'),
-      fetchAllFromTable('nuforc_reports')
-    ]);
-
-    // Normalizuj podatke
-    const normalizeRecord = (record, source) => ({
-      id: `${source}_${record.id}`,
-      lat: record.lat || record.latitude,
-      lon: record.lon || record.longitude,
-      city: record.city,
-      state: record.state,
-      country: record.country,
-      shape: record.shape,
-      date_event: record.date_event || record.datetime,
-      image_url: record.image_url,
-      description: record.description || record.summary,
-      source: source
-    });
-
-    // Kombinuj i normalizuj
-    const allData = [
-      ...reportsData.map(r => normalizeRecord(r, 'reports')),
-      ...nuforcData.map(r => normalizeRecord(r, 'nuforc'))
-    ].filter(r => r.lat && r.lon); // Samo sa validnim koordinatama
-
-    console.log(`✅ Total combined: ${allData.length} sightings`);
-    console.log(`   - From reports: ${reportsData.length}`);
-    console.log(`   - From nuforc_reports: ${nuforcData.length}`);
+    // COMBINE ALL DATA
+    const allData = [...reportsData, ...nuforcData];
+    
+    console.log(`🎯 FINAL TOTALS:`);
+    console.log(`   - Reports: ${reportsData.length}`);
+    console.log(`   - NUFORC: ${nuforcData.length}`);
+    console.log(`   - Combined: ${allData.length}`);
 
     res.json({
       success: true,
@@ -166,87 +214,87 @@ router.get('/map', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('GET /combined/map error:', err);
+    console.error('❌ GET /combined/map error:', err);
     res.status(500).json({
       success: false,
-      error: err.message
+      error: err.message,
+      details: err.details || null
     });
   }
 });
 
 // ====================================
-// GET /api/combined/:id - Detalji jednog sightinga iz bilo koje tabele
+// GET /api/combined/stats
+// ====================================
+router.get('/stats', async (req, res) => {
+  try {
+    console.log('📊 Combined/stats called');
+    
+    const { count: reportsCount } = await supabase
+      .from('reports')
+      .select('*', { count: 'exact', head: true });
+    
+    const { count: nuforcCount } = await supabase
+      .from('nuforc_reports')
+      .select('*', { count: 'exact', head: true });
+    
+    const total = (reportsCount || 0) + (nuforcCount || 0);
+    
+    console.log(`📊 Reports: ${reportsCount}, NUFORC: ${nuforcCount}, Total: ${total}`);
+    
+    res.json({
+      success: true,
+      data: {
+        total_sightings: total,
+        breakdown: {
+          reports: reportsCount || 0,
+          nuforc: nuforcCount || 0
+        }
+      }
+    });
+    
+  } catch (err) {
+    console.error('❌ Stats error:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
+});
+
+// ====================================
+// GET /api/combined/:id
 // ====================================
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Parse source and real id
-    const [source, realId] = id.includes('_') ? id.split('_') : ['reports', id];
-
-    const tableName = source === 'nuforc' ? 'nuforc_reports' : 'reports';
+    if (id.startsWith('nuforc_')) {
+      const realId = id.replace('nuforc_', '');
+      const { data, error } = await supabase
+        .from('nuforc_reports')
+        .select('*')
+        .eq('id', realId)
+        .single();
+      
+      if (!error && data) {
+        return res.json({ success: true, data });
+      }
+    }
     
     const { data, error } = await supabase
-      .from(tableName)
+      .from('reports')
       .select('*')
-      .eq('id', realId)
+      .eq('id', id)
       .single();
-
+    
     if (error) throw error;
-
-    if (!data) {
-      return res.status(404).json({
-        success: false,
-        error: 'Sighting not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      data: {
-        ...data,
-        source: tableName
-      }
-    });
-
+    res.json({ success: true, data });
+    
   } catch (err) {
-    console.error('GET /combined/:id error:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
-  }
-});
-
-// ====================================
-// GET /api/combined/stats - Kombinovane statistike
-// ====================================
-router.get('/stats', async (req, res) => {
-  try {
-    // Brojanje iz obe tabele
-    const [reports, nuforc] = await Promise.all([
-      supabase.from('reports').select('*', { count: 'exact', head: true }),
-      supabase.from('nuforc_reports').select('*', { count: 'exact', head: true })
-    ]);
-
-    const totalCount = (reports.count || 0) + (nuforc.count || 0);
-
-    res.json({
-      success: true,
-      data: {
-        total_sightings: totalCount,
-        breakdown: {
-          reports: reports.count || 0,
-          nuforc: nuforc.count || 0
-        }
-      }
-    });
-
-  } catch (err) {
-    console.error('GET /combined/stats error:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
     });
   }
 });
