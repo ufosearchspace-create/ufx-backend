@@ -4,6 +4,10 @@ import { supabase } from '../supabase.js';
 
 const router = express.Router();
 
+// Configuration constants
+const MAP_SAFETY_LIMIT = 60000; // Maximum number of records to fetch
+const MAP_CHUNK_SIZE = 1000; // Number of records per chunk
+
 // ====================================
 // GET /api/sightings - Lista sa filterima
 // ====================================
@@ -102,7 +106,7 @@ router.get('/map', async (req, res) => {
 
     let allData = [];
     let from = 0;
-    const chunkSize = 1000;
+    const chunkSize = MAP_CHUNK_SIZE;
     let hasMore = true;
 
     // Warn about loading all data
@@ -193,8 +197,8 @@ router.get('/map', async (req, res) => {
           hasMore = false;
         }
 
-        // Safety limit - max 60k zapisa
-        if (allData.length >= 60000) {
+        // Safety limit
+        if (allData.length >= MAP_SAFETY_LIMIT) {
           hasMore = false;
         }
       } else {
@@ -257,7 +261,7 @@ router.get('/map/progress', async (req, res) => {
 
     let allData = [];
     let from = 0;
-    const chunkSize = 1000;
+    const chunkSize = MAP_CHUNK_SIZE;
     let hasMore = true;
     let totalEstimated = null;
 
@@ -357,10 +361,10 @@ router.get('/map/progress', async (req, res) => {
           hasMore = false;
         }
 
-        // Safety limit - max 60k zapisa
-        if (allData.length >= 60000) {
+        // Safety limit
+        if (allData.length >= MAP_SAFETY_LIMIT) {
           hasMore = false;
-          sendProgress('warning', { message: 'Reached maximum limit of 60,000 records' });
+          sendProgress('warning', { message: `Reached maximum limit of ${MAP_SAFETY_LIMIT} records` });
         }
       } else {
         hasMore = false;
