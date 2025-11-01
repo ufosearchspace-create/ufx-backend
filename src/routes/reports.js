@@ -4,6 +4,10 @@ import { supabase } from '../supabase.js';
 
 const router = express.Router();
 
+// Configuration constants
+const MAP_SAFETY_LIMIT = 60000; // Maximum number of records to fetch
+const MAP_CHUNK_SIZE = 1000; // Number of records per chunk
+
 // ====================================
 // GET /api/sightings - Lista sa filterima
 // ====================================
@@ -16,6 +20,8 @@ router.get('/', async (req, res) => {
       shape,
       date_from,
       date_to,
+      has_image,
+      has_description,
       limit = 100,
       offset = 0
     } = req.query;
@@ -42,6 +48,16 @@ router.get('/', async (req, res) => {
     }
     if (date_to) {
       query = query.lte('date_event', date_to);
+    }
+    if (has_image === 'true') {
+      query = query.not('image_url', 'is', null);
+    } else if (has_image === 'false') {
+      query = query.is('image_url', null);
+    }
+    if (has_description === 'true') {
+      query = query.not('description', 'is', null);
+    } else if (has_description === 'false') {
+      query = query.is('description', null);
     }
 
     // Sorting i pagination
@@ -84,22 +100,38 @@ router.get('/map', async (req, res) => {
       year_to,
       country,
       state,
-      city
+      city,
+      load_mode // 'all', 'images_only', 'images_and_descriptions', 'descriptions_only'
     } = req.query;
 
     let allData = [];
     let from = 0;
-    const chunkSize = 1000;
+    const chunkSize = MAP_CHUNK_SIZE;
     let hasMore = true;
+
+    // Warn about loading all data
+    if (load_mode === 'all' || !load_mode) {
+      console.log('⚠️ WARNING: Loading all data (potentially large dataset)');
+    }
 
     console.log('🔄 Starting pagination fetch...');
 
     while (hasMore) {
       let query = supabase
         .from('reports')
-        .select('id, lat, lon, city, state, country, shape, date_event')
+        .select('id, lat, lon, city, state, country, shape, date_event, image_url, description')
         .not('lat', 'is', null)
         .not('lon', 'is', null);
+
+      // Apply data loading mode filters
+      if (load_mode === 'images_only') {
+        query = query.not('image_url', 'is', null);
+      } else if (load_mode === 'images_and_descriptions') {
+        query = query.not('image_url', 'is', null).not('description', 'is', null);
+      } else if (load_mode === 'descriptions_only') {
+        query = query.not('description', 'is', null);
+      }
+      // 'all' mode doesn't add any filters
 
       // Bounds filter
       if (bounds) {
@@ -165,8 +197,8 @@ router.get('/map', async (req, res) => {
           hasMore = false;
         }
 
-        // Safety limit - max 60k zapisa
-        if (allData.length >= 60000) {
+        // Safety limit
+        if (allData.length >= MAP_SAFETY_LIMIT) {
           hasMore = false;
         }
       } else {
@@ -188,6 +220,174 @@ router.get('/map', async (req, res) => {
       success: false,
       error: err.message
     });
+  }
+});
+
+// ====================================
+// GET /api/sightings/map/progress - Map data with progress tracking (SSE)
+// ====================================
+router.get('/map/progress', async (req, res) => {
+  try {
+    const {
+      bounds,
+      shape,
+      date_from,
+      date_to,
+      year_from,
+      year_to,
+      country,
+      state,
+      city,
+      load_mode // 'all', 'images_only', 'images_and_descriptions', 'descriptions_only'
+    } = req.query;
+
+    // Set headers for Server-Sent Events
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive'
+    });
+
+    const sendProgress = (type, data) => {
+      res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+    };
+
+    // Warn about loading all data
+    if (load_mode === 'all' || !load_mode) {
+      sendProgress('warning', { message: 'Loading all data (potentially large dataset)' });
+    }
+
+    sendProgress('start', { message: 'Starting data fetch...' });
+
+    let allData = [];
+    let from = 0;
+    const chunkSize = MAP_CHUNK_SIZE;
+    let hasMore = true;
+    let totalEstimated = null;
+
+    while (hasMore) {
+      let query = supabase
+        .from('reports')
+        .select('id, lat, lon, city, state, country, shape, date_event, image_url, description', { count: 'exact' })
+        .not('lat', 'is', null)
+        .not('lon', 'is', null);
+
+      // Apply data loading mode filters
+      if (load_mode === 'images_only') {
+        query = query.not('image_url', 'is', null);
+      } else if (load_mode === 'images_and_descriptions') {
+        query = query.not('image_url', 'is', null).not('description', 'is', null);
+      } else if (load_mode === 'descriptions_only') {
+        query = query.not('description', 'is', null);
+      }
+
+      // Bounds filter
+      if (bounds) {
+        const [minLat, minLon, maxLat, maxLon] = bounds.split(',').map(parseFloat);
+        query = query
+          .gte('lat', minLat)
+          .lte('lat', maxLat)
+          .gte('lon', minLon)
+          .lte('lon', maxLon);
+      }
+
+      // Shape filter
+      if (shape) {
+        query = query.eq('shape', shape.toLowerCase());
+      }
+
+      // Country filter
+      if (country) {
+        query = query.ilike('country', `%${country}%`);
+      }
+
+      // State filter
+      if (state) {
+        query = query.ilike('state', `%${state}%`);
+      }
+
+      // City filter
+      if (city) {
+        query = query.ilike('city', `%${city}%`);
+      }
+
+      // Date range filters
+      if (date_from) {
+        query = query.gte('date_event', date_from);
+      }
+      if (date_to) {
+        query = query.lte('date_event', date_to);
+      }
+
+      // Year range filters
+      if (year_from) {
+        query = query.gte('date_event', `${year_from}-01-01T00:00:00`);
+      }
+      if (year_to) {
+        query = query.lte('date_event', `${year_to}-12-31T23:59:59`);
+      }
+
+      // Fetch chunk
+      query = query.range(from, from + chunkSize - 1);
+      
+      const { data, error, count } = await query;
+
+      if (error) {
+        sendProgress('error', { message: error.message });
+        res.end();
+        return;
+      }
+
+      // Store total count from first request
+      if (totalEstimated === null && count !== null) {
+        totalEstimated = count;
+      }
+
+      if (data && data.length > 0) {
+        allData = allData.concat(data);
+        from += chunkSize;
+        
+        // Send progress update
+        const percentage = totalEstimated ? Math.round((allData.length / totalEstimated) * 100) : 0;
+        sendProgress('progress', {
+          loaded: allData.length,
+          total: totalEstimated,
+          percentage,
+          message: `Fetched ${allData.length}${totalEstimated ? ` of ${totalEstimated}` : ''} records...`
+        });
+        
+        // Ako je vratio manje od chunkSize, znači da nema više
+        if (data.length < chunkSize) {
+          hasMore = false;
+        }
+
+        // Safety limit
+        if (allData.length >= MAP_SAFETY_LIMIT) {
+          hasMore = false;
+          sendProgress('warning', { message: `Reached maximum limit of ${MAP_SAFETY_LIMIT} records` });
+        }
+      } else {
+        hasMore = false;
+      }
+    }
+
+    // Send completion with data
+    sendProgress('complete', {
+      count: allData.length,
+      data: allData
+    });
+
+    res.end();
+
+  } catch (err) {
+    console.error('GET /sightings/map/progress error:', err);
+    try {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+      res.end();
+    } catch (writeError) {
+      // If we can't write, connection is already closed
+      console.error('Failed to send error to client:', writeError);
+    }
   }
 });
 
