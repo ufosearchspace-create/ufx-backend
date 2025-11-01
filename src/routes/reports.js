@@ -27,7 +27,7 @@ router.get('/', async (req, res) => {
     } = req.query;
 
     let query = supabase
-      .from('nuforc_reports')
+      .from('reports')
       .select('*', { count: 'exact' });
 
     // Filteri
@@ -118,7 +118,7 @@ router.get('/map', async (req, res) => {
 
     while (hasMore) {
       let query = supabase
-        .from('nuforc_reports')
+        .from('reports')
         .select('id, lat, lon, city, state, country, shape, date_event, image_url, description')
         .not('lat', 'is', null)
         .not('lon', 'is', null);
@@ -267,7 +267,7 @@ router.get('/map/progress', async (req, res) => {
 
     while (hasMore) {
       let query = supabase
-        .from('nuforc_reports')
+        .from('reports')
         .select('id, lat, lon, city, state, country, shape, date_event, image_url, description', { count: 'exact' })
         .not('lat', 'is', null)
         .not('lon', 'is', null);
@@ -398,12 +398,12 @@ router.get('/stats', async (req, res) => {
   try {
     // Total count
     const { count: totalCount } = await supabase
-      .from('nuforc_reports')
+      .from('reports')
       .select('*', { count: 'exact', head: true });
 
     // Top 10 shapes
     const { data: topShapes } = await supabase
-      .from('nuforc_reports')
+      .from('reports')
       .select('shape')
       .not('shape', 'is', null)
       .limit(10000);
@@ -419,7 +419,7 @@ router.get('/stats', async (req, res) => {
 
     // Top 10 states
     const { data: topStates } = await supabase
-      .from('nuforc_reports')
+      .from('reports')
       .select('state')
       .not('state', 'is', null)
       .limit(10000);
@@ -435,7 +435,7 @@ router.get('/stats', async (req, res) => {
 
     // Top 10 cities
     const { data: topCities } = await supabase
-      .from('nuforc_reports')
+      .from('reports')
       .select('city, state')
       .not('city', 'is', null)
       .limit(10000);
@@ -477,7 +477,7 @@ router.get('/:id', async (req, res) => {
     const { id } = req.params;
 
     const { data, error } = await supabase
-      .from('nuforc_reports')
+      .from('reports')
       .select('*')
       .eq('id', id)
       .single();
