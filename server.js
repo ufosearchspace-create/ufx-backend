@@ -1,5 +1,4 @@
 // server.js
-import combinedRouter from './src/routes/combined.js';
 import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
@@ -9,7 +8,7 @@ import nuforcGithubRouter from "./src/importNuforcGithub.js";
 import camerasRouter from "./src/cameras.js";
 import aiVerifyRouter from "./src/aiVerify.js";
 import sightingsRouter from "./src/routes/reports.js";
-import authRouter from './src/routes/auth.js';
+import combinedRouter from './src/routes/combined.js';  // DODAJ OVO
 import { supabase } from "./src/supabase.js";
 import { isValidLat, isValidLon, adminGuard, cronGuard } from "./src/util.js";
 
@@ -22,7 +21,6 @@ const PORT = process.env.PORT || 10000;
 // Middleware
 app.use(cors());
 app.use(bodyParser.json({ limit: "10mb" }));
-app.use("/api/combined", combinedRouter);
 
 // ---- ENV logs (sanitizirano) ----
 console.log("🧩 ENV CHECK START");
@@ -436,6 +434,9 @@ app.use("/api", aiVerifyRouter);
 
 // ---- Sightings routes ----
 app.use("/api/sightings", sightingsRouter);
+
+// ---- Combined routes - NOVA RUTA ----
+app.use("/api/combined", combinedRouter);
 
 // ---- Auth routes ----
 app.use('/api/auth', authRouter);
